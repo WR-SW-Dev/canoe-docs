@@ -1,0 +1,56 @@
+Canoe Intelligence
+Canoe Intelligence / APIs / APIs
+Search for answers
+Categories
+Fetching an Access Token via Python
+Each call to the Canoe API must include an access token in the headers of the request.
+You must first fetch an access token via password grant or Oauth client credentials. Once
+the access token has been retrieved, it should be added to your headers and included in all
+subsequent requests.
+import requests
+headers = {
+  'Accept": 'application/json',
+  'X-Requested-With": 'XMLHttpRequest',
+  'Content-Type": 'application/json'
+}
+body = {
+  'username': 'sampleUser@test.com',
+  'password': 'securePW123'
+}
+#Request an access token
+token_request = requests.post('https://api.canoesoftware.com/v1/tokens', header
+#Parse access token from response
+access_token = token_request.json()['access_token']
+#Add access token to headers to be included in subsequent requests
+headers['Authorization'] = 'Bearer '+access_token
+Hi. Need any help?
+7/14/26, 9:20 AM
+Fetching an Access Token via Python – Canoe Intelligence
+https://help.canoeintelligence.com/hc/en-us/articles/44207608248723-Fetching-an-Access-Token-via-Python
+1/3
+Instructions on creating a service account for the client credentials auth flow can be
+found here.
+Related to
+api | Python | Access Token
+Previous article
+Bulk Categorization via API
+Next article
+Canoe API | Overview
+Recently viewed articles
+Bulk Categorization via API
+Canoe API | Best Practices
+Canoe API | Overview
+Addepar & Canoe Mapping
+Submit a ticket 
+Email a member of the Canoe Support team for answers
+7/14/26, 9:20 AM
+Fetching an Access Token via Python – Canoe Intelligence
+https://help.canoeintelligence.com/hc/en-us/articles/44207608248723-Fetching-an-Access-Token-via-Python
+2/3
+Home
+Resources
+Solutions
+7/14/26, 9:20 AM
+Fetching an Access Token via Python – Canoe Intelligence
+https://help.canoeintelligence.com/hc/en-us/articles/44207608248723-Fetching-an-Access-Token-via-Python
+3/3

@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Architecture A — Statement Tracker</title>
+<style>
+:root{
+  --paper:#F5F6F2; --paper-raised:#FFFFFF; --ink:#1B2420; --ink-soft:#4B554E;
+  --rule:#D8D9D2; --accent:#2F6F62; --accent-soft:#E4EEEA;
+  --brass:#8C7A4E; --warn:#9C7A22; --critical:#A3432F; --good:#4B6B2E; --pending:#7A8078;
+  --sky:#2E6B84; --sky-soft:#E1EBF0;
+  --font-display: Georgia, 'Iowan Old Style', 'Palatino Linotype', 'Book Antiqua', serif;
+  --font-body: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Code', 'Roboto Mono', monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --paper:#12161A; --paper-raised:#1A2024; --ink:#E7E9E2; --ink-soft:#A9B0A5;
+    --rule:#2A3128; --accent:#5FB39F; --accent-soft:#1C2A26;
+    --brass:#C9AD79; --warn:#D9A94A; --critical:#D97A63; --good:#8FBE6B; --pending:#8B9188;
+    --sky:#7FB4CC; --sky-soft:#17272E;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#12161A; --paper-raised:#1A2024; --ink:#E7E9E2; --ink-soft:#A9B0A5;
+  --rule:#2A3128; --accent:#5FB39F; --accent-soft:#1C2A26;
+  --brass:#C9AD79; --warn:#D9A94A; --critical:#D97A63; --good:#8FBE6B; --pending:#8B9188;
+  --sky:#7FB4CC; --sky-soft:#17272E;
+}
+:root[data-theme="light"]{
+  --paper:#F5F6F2; --paper-raised:#FFFFFF; --ink:#1B2420; --ink-soft:#4B554E;
+  --rule:#D8D9D2; --accent:#2F6F62; --accent-soft:#E4EEEA;
+  --brass:#8C7A4E; --warn:#9C7A22; --critical:#A3432F; --good:#4B6B2E; --pending:#7A8078;
+  --sky:#2E6B84; --sky-soft:#E1EBF0;
+}
+*{box-sizing:border-box;}
+html,body{background:var(--paper); color:var(--ink); font-family:var(--font-body); margin:0; padding:0; line-height:1.55; font-size:16px;}
+.wrap{max-width:920px; margin:0 auto; padding:56px 24px 120px;}
+a{color:var(--accent);}
+.packet-nav{font-family:var(--font-mono); font-size:11.5px; letter-spacing:.05em; color:var(--ink-soft); margin-bottom:22px; display:flex; flex-wrap:wrap; gap:6px 14px;}
+.packet-nav a{text-decoration:none; border-bottom:1px solid var(--rule);}
+.packet-nav a:hover{border-color:var(--accent);}
+.packet-nav .here{color:var(--brass); border-bottom:1px solid var(--brass);}
+.masthead{border-bottom:2px solid var(--ink); padding-bottom:22px;}
+.eyebrow{font-family:var(--font-mono); font-size:11.5px; letter-spacing:.09em; text-transform:uppercase; color:var(--brass);}
+h1{font-family:var(--font-display); font-weight:600; font-size:clamp(28px,4vw,40px); margin:10px 0 8px; text-wrap:balance; letter-spacing:-.01em;}
+.subtitle{color:var(--ink-soft); font-size:16px; max-width:66ch;}
+.meta-row{display:flex; flex-wrap:wrap; gap:6px 22px; margin-top:18px; font-family:var(--font-mono); font-size:12px; color:var(--ink-soft);}
+.meta-row b{color:var(--ink); font-weight:600;}
+.section-label{font-family:var(--font-mono); font-size:11.5px; letter-spacing:.09em; text-transform:uppercase; color:var(--brass); display:flex; align-items:center; gap:10px; margin-top:60px;}
+.section-label::after{content:""; flex:1; height:1px; background:var(--rule);}
+h2{font-family:var(--font-display); font-size:27px; margin:8px 0 6px; text-wrap:balance;}
+h3{font-family:var(--font-display); font-size:20px; margin:32px 0 8px;}
+p{max-width:74ch;} p.lede{font-size:17px; color:var(--ink-soft); max-width:68ch;}
+ul,ol{max-width:74ch; padding-left:22px;} li{margin-bottom:6px;}
+code{font-family:var(--font-mono); background:var(--accent-soft); padding:1px 6px; border-radius:4px; font-size:.9em;}
+
+.diagram-card{background:var(--paper-raised); border:1px solid var(--rule); border-radius:12px; padding:24px 22px; margin:24px 0; overflow-x:auto;}
+.diagram-card svg{display:block; margin:0 auto; max-width:100%; height:auto; min-width:640px;}
+.diagram-caption{font-family:var(--font-mono); font-size:11.5px; color:var(--ink-soft); margin-top:14px; padding-top:12px; border-top:1px dashed var(--rule);}
+/* SVG node classes */
+.n-box{fill:var(--paper-raised); stroke:var(--rule); stroke-width:1.5;}
+.n-src{fill:var(--accent-soft); stroke:var(--accent); stroke-width:1.5;}
+.n-store{fill:var(--sky-soft); stroke:var(--sky); stroke-width:1.5;}
+.n-rules{fill:var(--paper-raised); stroke:var(--brass); stroke-width:2;}
+.n-label{fill:var(--ink); font-family:var(--font-body); font-size:12px;}
+.n-sub{fill:var(--ink-soft); font-family:var(--font-mono); font-size:9.5px;}
+.n-flow{stroke:var(--brass); stroke-width:1.6; fill:none; marker-end:url(#ah);}
+.n-flowlabel{fill:var(--ink-soft); font-family:var(--font-mono); font-size:9px;}
+.n-good{fill:color-mix(in srgb,var(--good) 15%,var(--paper-raised)); stroke:var(--good); stroke-width:1.5;}
+.n-warn{fill:color-mix(in srgb,var(--warn) 15%,var(--paper-raised)); stroke:var(--warn); stroke-width:1.5;}
+.n-crit{fill:color-mix(in srgb,var(--critical) 14%,var(--paper-raised)); stroke:var(--critical); stroke-width:1.5;}
+
+/* Version cards */
+.versions{display:grid; grid-template-columns:1fr 1fr; gap:20px; margin:24px 0;}
+.vcard{border:1px solid var(--rule); border-radius:12px; overflow:hidden; background:var(--paper-raised); display:flex; flex-direction:column;}
+.vcard header{padding:16px 20px; border-bottom:1px solid var(--rule);}
+.v1 header{background:color-mix(in srgb,var(--good) 12%,transparent);}
+.v2 header{background:color-mix(in srgb,var(--sky) 13%,transparent);}
+.vtag{font-family:var(--font-mono); font-size:10.5px; font-weight:700; letter-spacing:.05em; text-transform:uppercase;}
+.v1 .vtag{color:var(--good);} .v2 .vtag{color:var(--sky);}
+.vcard h4{font-family:var(--font-display); font-size:18px; margin:6px 0 0;}
+.vcard .vbody{padding:16px 20px;}
+.vcard .vbody p{font-size:14px; margin:0 0 12px;}
+.vcard ul{padding-left:18px; margin:0 0 12px;} .vcard li{font-size:13.5px; margin-bottom:5px;}
+.status-line{font-family:var(--font-mono); font-size:11px; padding:10px 20px; border-top:1px dashed var(--rule); margin-top:auto;}
+.v1 .status-line{color:var(--good);} .v2 .status-line{color:var(--sky);}
+
+.pill{display:inline-block; font-family:var(--font-mono); font-size:10.5px; letter-spacing:.03em; padding:2px 8px; border-radius:99px; font-weight:600; white-space:nowrap;}
+.pill.good{background:color-mix(in srgb,var(--good) 16%,transparent); color:var(--good);}
+.pill.warn{background:color-mix(in srgb,var(--warn) 18%,transparent); color:var(--warn);}
+.pill.critical{background:color-mix(in srgb,var(--critical) 16%,transparent); color:var(--critical);}
+.pill.pending{background:color-mix(in srgb,var(--pending) 20%,transparent); color:var(--pending);}
+.pill.accent{background:var(--accent-soft); color:var(--accent);}
+
+.callout{border:1px solid var(--rule); border-left:4px solid var(--accent); background:var(--paper-raised); border-radius:6px; padding:16px 20px; margin:24px 0; max-width:74ch;}
+.callout.approve{border-left-color:var(--sky);}
+.callout .cl{font-family:var(--font-mono); font-size:11px; letter-spacing:.07em; text-transform:uppercase; font-weight:700; display:block; margin-bottom:7px; color:var(--accent);}
+.callout.approve .cl{color:var(--sky);}
+.callout p{margin:0 0 8px; font-size:14.5px;} .callout p:last-child{margin-bottom:0;}
+
+.table-scroll{overflow-x:auto; margin:18px 0; border:1px solid var(--rule); border-radius:8px;}
+table{border-collapse:collapse; width:100%; font-size:14px; min-width:600px;}
+thead th{font-family:var(--font-mono); font-size:10.5px; letter-spacing:.05em; text-transform:uppercase; color:var(--ink-soft); text-align:left; padding:10px 14px; background:var(--accent-soft); border-bottom:1px solid var(--rule); white-space:nowrap;}
+tbody td{padding:10px 14px; border-bottom:1px solid var(--rule); vertical-align:top;}
+tbody tr:last-child td{border-bottom:none;}
+td.mono{font-family:var(--font-mono); font-size:12.5px;}
+
+.phases{display:flex; flex-direction:column; margin:20px 0;}
+.phase{display:grid; grid-template-columns:58px 1fr; gap:18px; padding:16px 0; border-top:1px solid var(--rule);}
+.phase:first-child{border-top:none;}
+.phase-num{font-family:var(--font-display); font-size:22px; color:var(--brass); line-height:1;}
+.phase h4{margin:0 0 4px; font-size:15.5px; font-weight:700;}
+.phase p{margin:0; font-size:14px; color:var(--ink-soft);}
+
+footer{margin-top:80px; padding-top:18px; border-top:2px solid var(--ink); font-family:var(--font-mono); font-size:11.5px; color:var(--ink-soft);}
+@media (max-width:720px){ .versions{grid-template-columns:1fr;} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav class="packet-nav">
+    <a href="index.html">◆ Packet index</a>
+    <a href="genai-decision-tree.html">Decision-tree walkthrough</a>
+    <span class="here">A · Statement tracker</span>
+    <a href="intelligence-layer.html">B · Intelligence layer</a>
+    <a href="component-genai-table.html">Component × GenAI table</a>
+  </nav>
+
+  <div class="masthead">
+    <div class="eyebrow">Wake Robin · Investment Ops · Architecture A — Independent Track</div>
+    <h1>Statement Tracker Dashboard</h1>
+    <p class="subtitle">Complement the monthly/quarterly statement tracking ops does today in Excel — reduce the burden, increase efficiency, and cut the time spent chasing and logging statements. A statement hits Canoe → the API registers it → the dashboard updates with Firm, Fund, and the period it covers. Entirely metadata-and-rules — this track carries <b>no</b> Gen AI dependency.</p>
+    <div class="meta-row">
+      <span><b>Track</b> A of 2 · independent</span>
+      <span><b>GenAI</b> none required (v1)</span>
+      <span><b>Builds on</b> canoe_downloader.py</span>
+      <span><b>Status</b> Planning</span>
+    </div>
+  </div>
+
+  <div class="section-label">The reference architecture</div>
+  <h2>How a statement becomes a tracked filing</h2>
+  <p class="lede">Everything before the reconciliation engine is a scheduled poll against endpoints the downloader already uses. Everything after it is deterministic rules — no document body is ever opened.</p>
+
+  <div class="diagram-card">
+    <svg viewBox="0 0 860 300" role="img" aria-label="Statement tracker data flow">
+      <defs>
+        <marker id="ah" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="var(--brass)"></path></marker>
+      </defs>
+      <!-- Row 1: ingest -->
+      <rect class="n-src" x="10" y="30" width="150" height="56" rx="9"></rect>
+      <text class="n-label" x="85" y="52" text-anchor="middle">LP / GP portals</text>
+      <text class="n-sub" x="85" y="68" text-anchor="middle">~90% connected</text>
+      <line class="n-flow" x1="160" y1="58" x2="205" y2="58"></line>
+
+      <rect class="n-box" x="208" y="30" width="150" height="56" rx="9"></rect>
+      <text class="n-label" x="283" y="52" text-anchor="middle">Canoe platform</text>
+      <text class="n-sub" x="283" y="68" text-anchor="middle">tags + metadata</text>
+      <line class="n-flow" x1="358" y1="58" x2="403" y2="58"></line>
+
+      <rect class="n-box" x="406" y="24" width="168" height="68" rx="9"></rect>
+      <text class="n-label" x="490" y="46" text-anchor="middle">Poller (scheduled)</text>
+      <text class="n-sub" x="490" y="62" text-anchor="middle">GET /v1/documents</text>
+      <text class="n-sub" x="490" y="76" text-anchor="middle">file_upload_time_start</text>
+      <line class="n-flow" x1="574" y1="58" x2="619" y2="58"></line>
+
+      <rect class="n-store" x="622" y="30" width="150" height="56" rx="9"></rect>
+      <text class="n-label" x="697" y="52" text-anchor="middle">Tracking DB</text>
+      <text class="n-sub" x="697" y="68" text-anchor="middle">docs + allocations</text>
+
+      <!-- Expected schedule feeding recon -->
+      <rect class="n-store" x="200" y="140" width="185" height="60" rx="9"></rect>
+      <text class="n-label" x="292" y="163" text-anchor="middle">Expected schedule</text>
+      <text class="n-sub" x="292" y="179" text-anchor="middle">Firm × Fund × frequency</text>
+      <text class="n-sub" x="292" y="191" text-anchor="middle">sourced from Excel</text>
+
+      <!-- recon diamond-ish -->
+      <rect class="n-rules" x="430" y="132" width="175" height="76" rx="9"></rect>
+      <text class="n-label" x="517" y="158" text-anchor="middle">Reconciliation</text>
+      <text class="n-label" x="517" y="174" text-anchor="middle">engine</text>
+      <text class="n-sub" x="517" y="190" text-anchor="middle">rules only · no GenAI</text>
+
+      <line class="n-flow" x1="697" y1="86" x2="697" y2="118" ></line>
+      <path class="n-flow" d="M697,118 C697,140 605,150 605,168"></path>
+      <line class="n-flow" x1="385" y1="170" x2="428" y2="170"></line>
+
+      <!-- outcomes -->
+      <rect class="n-good" x="10" y="234" width="196" height="52" rx="9"></rect>
+      <text class="n-label" x="108" y="256" text-anchor="middle">Received — on time</text>
+      <text class="n-sub" x="108" y="271" text-anchor="middle">match found for period</text>
+
+      <rect class="n-warn" x="222" y="234" width="196" height="52" rx="9"></rect>
+      <text class="n-label" x="320" y="256" text-anchor="middle">Overdue</text>
+      <text class="n-sub" x="320" y="271" text-anchor="middle">no doc by due date</text>
+
+      <rect class="n-crit" x="434" y="234" width="238" height="52" rx="9"></rect>
+      <text class="n-label" x="553" y="252" text-anchor="middle">Needs human review</text>
+      <text class="n-sub" x="553" y="267" text-anchor="middle">Awaiting Confirmation · Anomaly · Discrepancy</text>
+
+      <path class="n-flow" d="M470,208 C470,222 150,220 130,232"></path>
+      <path class="n-flow" d="M500,208 C500,222 340,222 330,232"></path>
+      <path class="n-flow" d="M545,208 L550,232"></path>
+
+      <!-- dashboard -->
+      <rect class="n-box" x="700" y="150" width="150" height="120" rx="9"></rect>
+      <text class="n-label" x="775" y="205" text-anchor="middle">Dashboard</text>
+      <text class="n-sub" x="775" y="221" text-anchor="middle">+ alerts</text>
+      <path class="n-flow" d="M672,260 C690,260 700,240 700,225"></path>
+    </svg>
+    <div class="diagram-caption">Green / amber / red outcomes map directly to the dashboard's status pills. Canoe's three review flags never auto-confirm a period — they route to the review queue, which is the tracker's most important view given the known data-date tagging gap.</div>
+  </div>
+
+  <div class="section-label">The two versions</div>
+  <h2>Compliant today vs. better with approval</h2>
+  <p class="lede">Architecture A is unusual in that its baseline is already fully compliant — it reads no document content at all. The upgrade path is about closing the data-date gap that otherwise lands on a person's desk.</p>
+
+  <div class="versions">
+    <div class="vcard v1">
+      <header>
+        <div class="vtag">Version 1 · Build now</div>
+        <h4>Deterministic, no document content read</h4>
+      </header>
+      <div class="vbody">
+        <p>Pure metadata + rules. The system reads Canoe's structured fields (fund, entity, <code>data_date</code>, status) — never the file body. All data stays local on the Mac Mini or inside the M365 tenant.</p>
+        <ul>
+          <li>Uses Canoe's <code>data_date</code> as-is</li>
+          <li>Any flagged status <b>or</b> missing/implausible date → human-review queue</li>
+          <li>Dashboard as a local app <b>or</b> a SharePoint/Power BI view (both in-tenant)</li>
+          <li>No new tool, no new data-handling — nothing to approve</li>
+        </ul>
+      </div>
+      <div class="status-line">✔ Compliant under current policy · no AI review needed</div>
+    </div>
+
+    <div class="vcard v2">
+      <header>
+        <div class="vtag">Version 2 · Needs approval</div>
+        <h4>+ narrow LLM pass to fix the data-date gap</h4>
+      </header>
+      <div class="vbody">
+        <p>Adds one tightly-scoped model call that reads <i>only</i> the "as of / period-end date" from statements Canoe mis-tagged or left blank — the single biggest driver of manual review today.</p>
+        <ul>
+          <li>Automates the team's #1 pain point instead of queuing it</li>
+          <li>Extracted date validated against the expected period (deterministic check)</li>
+          <li>Token cost near-zero: runs only on exception docs, cheapest model, one field</li>
+          <li>Sends statement content to an LLM → triggers the compliance gate</li>
+        </ul>
+      </div>
+      <div class="status-line">▲ Requires IT Lead/CTO review (financial-document content)</div>
+    </div>
+  </div>
+
+  <div class="callout approve">
+    <span class="cl">Why v2 is worth requesting</span>
+    <p>The whole reason a passive "list what arrived" view isn't sufficient is that Canoe frequently gets the data date wrong — and the data date <i>is</i> the field that answers "which period does this statement cover." Version 1 handles that safely by sending every questionable date to a human. Version 2 removes most of that manual work by having a model read the one date off the page, then checks its answer against what the schedule expected. It's the highest-leverage, lowest-token use of AI in the entire project — but because it puts statement content in front of a model, it belongs to the same approval path as Architecture B. See the <a href="intelligence-layer.html#gate">compliance gate</a>.</p>
+  </div>
+
+  <div class="section-label">Components</div>
+  <h2>What gets built</h2>
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th>Component</th><th>Responsibility</th><th>Builds on</th><th>Version</th></tr></thead>
+      <tbody>
+        <tr><td>Poller</td><td>Delta-fetch new document metadata on a schedule</td><td class="mono">canoe_downloader.py</td><td><span class="pill good">v1</span></td></tr>
+        <tr><td>Tracking DB</td><td>Queryable store of documents + allocations</td><td>SQLite → Postgres if it grows</td><td><span class="pill good">v1</span></td></tr>
+        <tr><td>Expected schedule</td><td>Firm × Fund × frequency × active date range</td><td>Sourced from the Excel tracker</td><td><span class="pill good">v1</span></td></tr>
+        <tr><td>Reconciliation engine</td><td>Match received vs. expected; flag overdue / anomalous</td><td>Plain SQL / Python rules</td><td><span class="pill good">v1</span></td></tr>
+        <tr><td>Review queue</td><td>Everything Canoe flagged or with a doubtful date</td><td>DB view + dashboard tab</td><td><span class="pill good">v1</span></td></tr>
+        <tr><td>Data-date extractor</td><td>Read period-end date off exception documents</td><td>Approved LLM path (see B)</td><td><span class="pill accent">v2</span></td></tr>
+        <tr><td>Dashboard + alerts</td><td>Firm/Fund/Period grid; overdue + anomaly notifications</td><td>Local app or Power BI/SharePoint · SMTP/Teams</td><td><span class="pill good">v1</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section-label">Sequence</div>
+  <h2>Build phases</h2>
+  <div class="phases">
+    <div class="phase"><div class="phase-num">A1</div><div><h4>Metadata store</h4><p>Extend the poller to upsert full document + allocation metadata into a DB rather than a flat ID list. Storage upgrade only — no change to what's downloaded.</p></div></div>
+    <div class="phase"><div class="phase-num">A2</div><div><h4>Expected-schedule setup</h4><p>Reproduce the Excel tracker's Firm × Fund × frequency logic as a structured, ops-editable config the tool can check against — the sheet stays the source of truth for expectations. Highest risk of quiet error — validate against several months of the existing sheet before the team relies on it. Watch for undocumented exceptions (wind-down funds, commitments not yet active, the ~10% of portals not on Canoe).</p></div></div>
+    <div class="phase"><div class="phase-num">A3</div><div><h4>Reconciliation + review queue</h4><p>Rules engine matching received vs. expected; a dedicated queue for anything Canoe flagged or dated implausibly.</p></div></div>
+    <div class="phase"><div class="phase-num">A4</div><div><h4>Dashboard + alerts</h4><p>Visual layer + overdue/anomaly notifications. Runs alongside the Excel process rather than replacing it — the dashboard takes over the routine "what arrived / what's outstanding" tracking, so the manual sheet takes far less time to keep current. The team decides how much of the sheet to keep.</p></div></div>
+    <div class="phase"><div class="phase-num">A5</div><div><h4>(v2, if approved) Data-date extractor</h4><p>Drop the narrow LLM date-read into the review queue so most exceptions clear automatically. Purely additive — the v1 human queue remains the fallback for low-confidence reads.</p></div></div>
+  </div>
+
+  <footer>Architecture A — Statement Tracker · Independent track, runs in parallel with Architecture B · Planning stage, no implementation</footer>
+</div>
+</body>
+</html>

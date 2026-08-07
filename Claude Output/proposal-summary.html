@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Canoe Automation — Proposal</title>
+<style>
+:root{
+  --paper:#F5F6F2; --paper-raised:#FFFFFF; --ink:#1B2420; --ink-soft:#4B554E;
+  --rule:#D8D9D2; --accent:#2F6F62; --accent-soft:#E4EEEA;
+  --brass:#8C7A4E; --warn:#9C7A22; --critical:#A3432F; --good:#4B6B2E; --sky:#2E6B84; --sky-soft:#E1EBF0;
+  --font-display: Georgia, 'Iowan Old Style', 'Palatino Linotype', 'Book Antiqua', serif;
+  --font-body: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Code', 'Roboto Mono', monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --paper:#12161A; --paper-raised:#1A2024; --ink:#E7E9E2; --ink-soft:#A9B0A5;
+    --rule:#2A3128; --accent:#5FB39F; --accent-soft:#1C2A26;
+    --brass:#C9AD79; --warn:#D9A94A; --critical:#D97A63; --good:#8FBE6B; --sky:#7FB4CC; --sky-soft:#17272E;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#12161A; --paper-raised:#1A2024; --ink:#E7E9E2; --ink-soft:#A9B0A5;
+  --rule:#2A3128; --accent:#5FB39F; --accent-soft:#1C2A26;
+  --brass:#C9AD79; --warn:#D9A94A; --critical:#D97A63; --good:#8FBE6B; --sky:#7FB4CC; --sky-soft:#17272E;
+}
+:root[data-theme="light"]{
+  --paper:#F5F6F2; --paper-raised:#FFFFFF; --ink:#1B2420; --ink-soft:#4B554E;
+  --rule:#D8D9D2; --accent:#2F6F62; --accent-soft:#E4EEEA;
+  --brass:#8C7A4E; --warn:#9C7A22; --critical:#A3432F; --good:#4B6B2E; --sky:#2E6B84; --sky-soft:#E1EBF0;
+}
+*{box-sizing:border-box;}
+html,body{background:var(--paper); color:var(--ink); font-family:var(--font-body); margin:0; padding:0; line-height:1.6; font-size:16.5px;}
+.wrap{max-width:760px; margin:0 auto; padding:60px 24px 100px;}
+a{color:var(--accent);}
+.eyebrow{font-family:var(--font-mono); font-size:11.5px; letter-spacing:.1em; text-transform:uppercase; color:var(--brass);}
+h1{font-family:var(--font-display); font-weight:600; font-size:clamp(30px,5vw,42px); margin:12px 0 12px; text-wrap:balance; letter-spacing:-.015em; line-height:1.1;}
+.standfirst{font-size:19px; color:var(--ink-soft); max-width:60ch; margin:0;}
+.masthead{border-bottom:2px solid var(--ink); padding-bottom:24px;}
+.meta-row{display:flex; flex-wrap:wrap; gap:6px 24px; margin-top:20px; font-family:var(--font-mono); font-size:12px; color:var(--ink-soft);}
+.meta-row b{color:var(--ink); font-weight:600;}
+
+/* At a glance */
+.glance{display:grid; grid-template-columns:repeat(3,1fr); gap:1px; background:var(--rule); border:1px solid var(--rule); border-radius:12px; overflow:hidden; margin:34px 0;}
+.glance div{background:var(--paper-raised); padding:18px 20px;}
+.glance .g-k{font-family:var(--font-mono); font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--brass); margin-bottom:6px;}
+.glance .g-v{font-size:15px; font-weight:600;}
+.glance .g-v small{display:block; font-weight:400; font-size:13px; color:var(--ink-soft); margin-top:2px;}
+
+h2{font-family:var(--font-display); font-size:24px; margin:46px 0 6px; text-wrap:balance;}
+p{max-width:62ch;}
+.section-tag{font-family:var(--font-mono); font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--brass);}
+
+/* Idea cards */
+.ideas{display:grid; grid-template-columns:1fr 1fr; gap:18px; margin:24px 0;}
+.idea{border:1px solid var(--rule); border-radius:14px; background:var(--paper-raised); padding:22px; display:flex; flex-direction:column;}
+.idea.one{border-top:4px solid var(--good);}
+.idea.two{border-top:4px solid var(--sky);}
+.idea .num{font-family:var(--font-mono); font-size:11px; font-weight:700; letter-spacing:.05em;}
+.idea.one .num{color:var(--good);} .idea.two .num{color:var(--sky);}
+.idea h3{font-family:var(--font-display); font-size:20px; margin:6px 0 8px;}
+.idea p{font-size:14.5px; margin:0 0 14px; color:var(--ink); max-width:none;}
+.idea .plain{font-size:13.5px; color:var(--ink-soft); border-top:1px dashed var(--rule); padding-top:12px; margin-top:auto;}
+.idea .plain b{color:var(--ink);}
+
+/* status line */
+.st{display:inline-flex; align-items:center; gap:8px; font-family:var(--font-mono); font-size:11.5px; font-weight:600; padding:5px 12px; border-radius:99px; margin-top:6px;}
+.st.now{background:color-mix(in srgb,var(--good) 16%,transparent); color:var(--good);}
+.st.appr{background:color-mix(in srgb,var(--sky) 16%,transparent); color:var(--sky);}
+
+/* compliance panel */
+.panel{background:var(--paper-raised); border:1px solid var(--rule); border-left:4px solid var(--brass); border-radius:10px; padding:20px 22px; margin:24px 0;}
+.panel h3{font-family:var(--font-display); font-size:18px; margin:0 0 8px;}
+.panel p{font-size:14.5px; margin:0 0 10px;} .panel p:last-child{margin:0;}
+
+/* two-version explainer */
+.vpair{display:grid; grid-template-columns:1fr 1fr; gap:14px; margin:18px 0;}
+.vbox{border:1px solid var(--rule); border-radius:10px; padding:16px 18px; background:var(--paper-raised);}
+.vbox .vt{font-family:var(--font-mono); font-size:10.5px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; margin-bottom:6px;}
+.vbox.a .vt{color:var(--good);} .vbox.b .vt{color:var(--sky);}
+.vbox p{font-size:13.5px; margin:0; color:var(--ink-soft);}
+
+/* next steps */
+.steps{list-style:none; padding:0; margin:20px 0; counter-reset:s;}
+.steps li{counter-increment:s; display:grid; grid-template-columns:38px 1fr; gap:14px; padding:14px 0; border-top:1px solid var(--rule); align-items:start;}
+.steps li:first-child{border-top:none;}
+.steps li::before{content:counter(s); font-family:var(--font-display); font-size:20px; color:var(--brass); background:var(--accent-soft); border-radius:50%; width:34px; height:34px; display:flex; align-items:center; justify-content:center;}
+.steps b{display:block; margin-bottom:2px;}
+.steps span{font-size:14px; color:var(--ink-soft);}
+
+footer{margin-top:56px; padding-top:20px; border-top:2px solid var(--ink); font-family:var(--font-mono); font-size:11.5px; color:var(--ink-soft);}
+footer a{border-bottom:1px solid var(--rule); text-decoration:none;}
+@media (max-width:620px){ .glance{grid-template-columns:1fr;} .ideas,.vpair{grid-template-columns:1fr;} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="masthead">
+    <div class="eyebrow">Wake Robin · Investment Operations · Proposal</div>
+    <h1>Automating statement tracking with the Canoe API</h1>
+    <p class="standfirst">Two ways to spend less time chasing statements and get more insight from them — one we can start today, one worth asking to unlock.</p>
+    <div class="meta-row">
+      <span><b>For</b> the Ops team</span>
+      <span><b>Date</b> July 2026</span>
+      <span><b>Stage</b> Idea / discussion</span>
+      <span><b>Read time</b> ~3 min</span>
+    </div>
+  </div>
+
+  <div class="glance">
+    <div><div class="g-k">The problem</div><div class="g-v">Manual tracking<small>Statements logged by hand in a spreadsheet — slow, easy to fall behind.</small></div></div>
+    <div><div class="g-k">The idea</div><div class="g-v">Two tools<small>A tracking dashboard, and an optional insight layer — both fed by Canoe.</small></div></div>
+    <div><div class="g-k">The ask</div><div class="g-v">Start #1, review #2<small>One fits today's rules; one needs an AI sign-off first.</small></div></div>
+  </div>
+
+  <span class="section-tag">Why</span>
+  <h2>The problem, plainly</h2>
+  <p>Every month and quarter, our fund managers send account statements. They arrive in Canoe, the platform that collects our documents. Today, someone on the team logs each one by hand in a spreadsheet to keep track of what's come in and what's still missing.</p>
+  <p>It works — but it takes real time, it's easy to fall behind, and Canoe frequently mislabels <i>which period</i> a statement covers, so a person has to double-check. The goal here is to take that routine load off the team, not to change how they work.</p>
+
+  <span class="section-tag">What we're proposing</span>
+  <h2>Two complementary tools</h2>
+  <div class="ideas">
+    <div class="idea one">
+      <div class="num">IDEA 1 · START NOW</div>
+      <h3>Statement Tracker</h3>
+      <p>A simple dashboard that watches Canoe for new statements and shows, at a glance, what's arrived, what's still outstanding, and what needs a closer look — organized by firm, fund, and period.</p>
+      <div class="plain"><b>In plain terms:</b> it does the routine tracking automatically and works <b>alongside</b> the spreadsheet — the team keeps the sheet, but spends far less time keeping it current.
+      <br><span class="st now">✔ Fits our current policy</span></div>
+    </div>
+    <div class="idea two">
+      <div class="num">IDEA 2 · WORTH UNLOCKING</div>
+      <h3>Document Intelligence</h3>
+      <p>An optional next step that reads the statements themselves to pull out key figures — things like value, fees, and returns — and tracks how they move quarter over quarter and manager over manager, flagging what's worth a second look.</p>
+      <div class="plain"><b>In plain terms:</b> it turns a pile of PDFs into trends and early warnings. It uses AI to read the documents, so it needs a sign-off first (see below).
+      <br><span class="st appr">▲ Needs an AI-use approval</span></div>
+    </div>
+  </div>
+
+  <span class="section-tag">The one thing to decide</span>
+  <h2>Where the AI policy comes in</h2>
+  <div class="panel">
+    <h3>Idea 1 is clear. Idea 2 needs a green light.</h3>
+    <p><b>Idea 1</b> only reads Canoe's labels and dates — never the contents of the documents — so there's nothing new to approve. We can build it under today's rules.</p>
+    <p><b>Idea 2</b> has AI read the statements, which are sensitive financial documents. Our AI policy allows that only inside our licensed Microsoft environment, or with sign-off from the IT Lead/CTO. So the single decision that unlocks Idea 2 is that review — an approval call, not a technical one.</p>
+  </div>
+
+  <span class="section-tag">How we've scoped each idea</span>
+  <h2>A "build now" and a "better" version of each</h2>
+  <p>To make the choice easy, each idea is written up two ways:</p>
+  <div class="vpair">
+    <div class="vbox a"><div class="vt">Version 1 · Build now</div><p>Stays fully within today's policy. Nothing new to approve — we can start immediately.</p></div>
+    <div class="vbox b"><div class="vt">Version 2 · Better, with approval</div><p>Does more or does it better, but needs the IT Lead/CTO sign-off first. The write-up explains why it's worth asking.</p></div>
+  </div>
+  <p style="font-size:14.5px; color:var(--ink-soft);">Cost stays low either way: the tools only do work when a new statement actually arrives, so there's no ongoing expense from letting them run.</p>
+
+  <span class="section-tag">What the build involves</span>
+  <h2>The pieces we'd create</h2>
+  <p>Nothing has been built yet — this is a from-scratch project. Below is the set of Python components the build would involve, grouped by which idea each serves. The shared foundation is written once and used by both, so starting Idea 1 also lays the groundwork for Idea 2. The right-hand column flags the open questions and recommendations for the team to weigh in on.</p>
+
+  <style>
+    .fgh{font-family:var(--font-display); font-size:17px; margin:30px 0 8px; display:flex; align-items:center; gap:10px;}
+    .fgh .dot{width:10px; height:10px; border-radius:50%; flex:0 0 auto;}
+    .fgh.found .dot{background:var(--brass);} .fgh.one .dot{background:var(--good);} .fgh.two .dot{background:var(--sky);}
+    .fgh .fgt{font-family:var(--font-mono); font-size:11px; color:var(--ink-soft); font-weight:400;}
+    .files-scroll{overflow-x:auto; border:1px solid var(--rule); border-radius:9px;}
+    table.files{border-collapse:collapse; width:100%; font-size:13.5px; min-width:660px;}
+    table.files thead th{font-family:var(--font-mono); font-size:10px; letter-spacing:.05em; text-transform:uppercase; color:var(--ink-soft); text-align:left; padding:9px 13px; background:var(--accent-soft); border-bottom:1px solid var(--rule); white-space:nowrap;}
+    table.files tbody td{padding:11px 13px; border-bottom:1px solid var(--rule); vertical-align:top;}
+    table.files tbody tr:last-child td{border-bottom:none;}
+    .files .fcode{font-family:var(--font-mono); font-size:12.5px; background:var(--accent-soft); padding:2px 8px; border-radius:5px; white-space:nowrap;}
+    .files .d{color:var(--ink);}
+    .files .ai{display:inline-block; font-family:var(--font-mono); font-size:9px; font-weight:700; letter-spacing:.03em; color:var(--sky); background:color-mix(in srgb,var(--sky) 15%,transparent); padding:1px 7px; border-radius:99px; margin-left:2px; white-space:nowrap;}
+    .files .oi{color:var(--ink-soft); font-size:13px;}
+    .files .oi-tag{font-family:var(--font-mono); font-size:9.5px; font-weight:700; letter-spacing:.03em; text-transform:uppercase; padding:1px 7px; border-radius:4px; margin-right:6px; white-space:nowrap;}
+    .oi-tag.decide{background:color-mix(in srgb,var(--warn) 20%,transparent); color:var(--warn);}
+    .oi-tag.rec{background:color-mix(in srgb,var(--good) 16%,transparent); color:var(--good);}
+    .files .dash{color:var(--rule);}
+  </style>
+
+  <div class="fgh found"><span class="dot"></span>Shared foundation <span class="fgt">written once · used by both ideas</span></div>
+  <div class="files-scroll"><table class="files">
+    <thead><tr><th style="width:19%">File</th><th style="width:40%">What it does</th><th>Open items &amp; discussion</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><span class="fcode">config.py</span></td>
+        <td class="d">Central settings — folder paths and the firm/fund list. It <b>points to</b> where credentials are stored; it does not hold the secrets themselves.</td>
+        <td class="oi"><span class="oi-tag rec">Recommend</span>Credentials should live in a <b>gitignored <code>.env</code> file</b> — or, most securely, the OS keychain / a secrets manager — never hardcoded in this file or committed to the repo.</td>
+      </tr>
+      <tr>
+        <td><span class="fcode">canoe_auth.py</span></td>
+        <td class="d">Securely logs in to the Canoe API and manages access tokens, so no passwords sit in the code.</td>
+        <td class="oi"><span class="dash">—</span></td>
+      </tr>
+      <tr>
+        <td><span class="fcode">canoe_client.py</span></td>
+        <td class="d">The workhorse that talks to Canoe — lists new documents, downloads files, and handles paging and rate limits.</td>
+        <td class="oi"><span class="oi-tag decide">Decide</span>Where downloaded files are saved — a local folder on the run machine, or a <b>SharePoint document library</b>. Affects access, backup, and permissions.</td>
+      </tr>
+    </tbody>
+  </table></div>
+
+  <div class="fgh one"><span class="dot"></span>Idea 1 — Statement Tracker <span class="fgt">start now</span></div>
+  <div class="files-scroll"><table class="files">
+    <thead><tr><th style="width:19%">File</th><th style="width:40%">What it does</th><th>Open items &amp; discussion</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><span class="fcode">poller.py</span></td>
+        <td class="d">Checks Canoe for newly arrived statements.</td>
+        <td class="oi"><span class="oi-tag rec">Propose</span>Run once daily at <b>7:00&nbsp;AM&nbsp;EST</b>, so the day's status is ready before the team starts.</td>
+      </tr>
+      <tr>
+        <td><span class="fcode">tracker_db.py</span></td>
+        <td class="d">The tracking database — stores each statement's firm, fund, period, and status.</td>
+        <td class="oi"><span class="oi-tag decide">Decide</span>Which storage tool: <b>SQLite</b> (a single file, zero setup — a good default), <b>Postgres</b> (if it grows), or even a SharePoint / Excel list if we'd rather avoid a database entirely.</td>
+      </tr>
+      <tr>
+        <td><span class="fcode">expected_schedule.py</span></td>
+        <td class="d">The list of which firm/fund should send a statement each period, and how often.</td>
+        <td class="oi"><span class="oi-tag decide">Revisit</span>May not need to be built by hand — we can likely <b>infer the expected cadence from 1–2 years of past documents</b> (a backfill we'd run during testing). Open question: do we already have this list in usable form?</td>
+      </tr>
+      <tr>
+        <td><span class="fcode">reconcile.py</span></td>
+        <td class="d">Compares what arrived against what was expected; marks each as on-time, overdue, or needs-review.</td>
+        <td class="oi"><span class="dash">—</span></td>
+      </tr>
+      <tr>
+        <td><span class="fcode">dashboard.py</span></td>
+        <td class="d">Presents the at-a-glance view of statement status by firm, fund, and period.</td>
+        <td class="oi"><span class="oi-tag decide">Decide</span>Where the view lives: a <b>simple web UI</b>, or a <b>dump to an Excel file in SharePoint</b>? If a UI — does Wake Robin have an approved framework or policy for internal apps we should use?</td>
+      </tr>
+      <tr>
+        <td><span class="fcode">notify.py</span></td>
+        <td class="d">Sends alerts about overdue or unusual statements.</td>
+        <td class="oi"><span class="oi-tag decide">Discuss</span>What's actually useful — overdue-only, a daily digest, or real-time anomaly flags — and the channel (email vs. Teams)?</td>
+      </tr>
+    </tbody>
+  </table></div>
+
+  <div class="fgh two"><span class="dot"></span>Idea 2 — Document Intelligence <span class="fgt">once approved</span></div>
+  <div class="files-scroll"><table class="files">
+    <thead><tr><th style="width:19%">File</th><th style="width:40%">What it does</th><th>Open items &amp; discussion</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><span class="fcode">pdf_extract.py</span></td>
+        <td class="d">Pulls the raw text and tables out of each statement — no AI involved.</td>
+        <td class="oi"><span class="dash">—</span></td>
+      </tr>
+      <tr>
+        <td><span class="fcode">llm_provider.py</span></td>
+        <td class="d">The single, swappable connection to whichever approved AI model is used.<span class="ai">the main cost lever</span></td>
+        <td class="oi"><span class="oi-tag decide">Decide</span>Which approved model, and where it runs — tied to the AI approval above.</td>
+      </tr>
+      <tr>
+        <td><span class="fcode">field_extract.py</span></td>
+        <td class="d">Reads the key figures — value, fees, returns — and scores how confident it is in each.<span class="ai">uses AI</span></td>
+        <td class="oi"><span class="dash">—</span></td>
+      </tr>
+      <tr>
+        <td><span class="fcode">warehouse.py</span></td>
+        <td class="d">Stores the extracted figures as a clean, queryable history.</td>
+        <td class="oi"><span class="oi-tag decide">Decide</span>Same storage choice as <code>tracker_db.py</code> above — ideally the two share one database.</td>
+      </tr>
+      <tr>
+        <td><span class="fcode">trends.py</span></td>
+        <td class="d">The trend and manager-comparison calculations — plain math, no AI.</td>
+        <td class="oi"><span class="dash">—</span></td>
+      </tr>
+      <tr>
+        <td><span class="fcode">narrative.py</span></td>
+        <td class="d">Drafts the cross-quarter commentary, grounded in our own past statements.<span class="ai">uses AI + retrieval</span></td>
+        <td class="oi"><span class="dash">—</span></td>
+      </tr>
+      <tr>
+        <td><span class="fcode">digest.py</span></td>
+        <td class="d">Assembles the weekly summary email / dashboard.</td>
+        <td class="oi"><span class="dash">—</span></td>
+      </tr>
+    </tbody>
+  </table></div>
+
+  <p style="font-size:13.5px; color:var(--ink-soft); margin-top:18px;">Plus the usual scaffolding — a <code style="font-family:var(--font-mono);font-size:.85em;background:var(--accent-soft);padding:1px 6px;border-radius:4px;">requirements.txt</code> listing dependencies and a small entry point to run each idea on a schedule. The full technical detail lives in the <a href="index.html">architecture packet</a>.</p>
+
+  <span class="section-tag">Recommendation</span>
+  <h2>Suggested next steps</h2>
+  <ol class="steps">
+    <li><div><b>Start Idea 1 now.</b><span>Low risk, fits current policy, and takes the routine tracking off the team's plate right away.</span></div></li>
+    <li><div><b>Ask IT to review the AI approach for Idea 2 — in parallel.</b><span>So it's ready to go the moment it's approved, instead of starting that conversation later.</span></div></li>
+    <li><div><b>Pull a few months of the current spreadsheet.</b><span>To make sure the dashboard matches how we actually track today before anyone leans on it.</span></div></li>
+  </ol>
+
+  <footer>
+    Canoe Automation Proposal · Wake Robin Investment Operations · July 2026<br>
+    Want the detail? See the full packet: <a href="index.html">architecture, both ideas, the AI decision reasoning, and the component breakdown →</a>
+  </footer>
+</div>
+</body>
+</html>

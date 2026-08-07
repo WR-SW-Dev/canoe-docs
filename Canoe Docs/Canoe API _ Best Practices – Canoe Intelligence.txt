@@ -1,0 +1,124 @@
+Canoe Intelligence
+Canoe Intelligence / APIs / APIs
+Search for answers
+Categories
+Canoe API | Best Practices
+Use Canoe's Postman Collection
+Postman makes building, saving, testing your calls, and viewing responses easy. Canoe
+uses this tool internally when working with our API, which we recommend for all clients.
+To get started, download the latest version of our Postman collection.
+Reducing Timeouts for Large Result Sets
+Nine endpoints offer pagination (listed below), where responses are split across multiple
+pages.  Pagination supports the return of large result sets, and we highly recommend
+using it whenever it is offered.  Verify (and update as needed) that the calls you make
+contain the page and limit parameters.  The response header indicates how many pages
+are available to know if you need to call for more pages.
+Endpoints that offer pagination:
+Download Documents
+Download a Single Fund’s Documents
+Download a Single Organization’s Documents
+Get Document Data*
+Get Document Tags
+Get Funds*
+Get a Single Fund's Documents*
+Hi. Need any help?
+7/14/26, 9:20 AM
+Canoe API | Best Practices – Canoe Intelligence
+https://help.canoeintelligence.com/hc/en-us/articles/43120591999379-Canoe-API-Best-Practices
+1/5
+Get Terms
+Get Organizations*
+Get a Single Organization's Document Data*
+Get Allocations
+*These endpoints require setting the X-API-VERSION header as described in the API
+documentation.
+Note: Unpaginated calls will be depreciated in future versions of the Canoe API.
+Downloading New Data and Documents
+A common use case is downloading documents and/or their associated data once they are
+in a Complete status on Canoe. We recommend polling the Get Document Data endpoint
+(/v1/documents/data) no more than hourly to check for newly available document IDs.
+Specify the document_status parameter with values Complete, Potential Discrepancy, and
+Storage Only, along with the file_upload_time_start or last_modified_time_start set to the
+date and time of the previously downloaded data to look for new documents since that
+time.
+Then, take those new document IDs and pass them into the Get Documents endpoint
+(/v1/documents) to retrieve the corresponding documents.
+In addition, you should use as many specific parameters as possible to retrieve only the
+information that is necessary for that API call.
+Prevent Retrieving Documents More Than Once
+The best way to prevent downloading a document that has already been retrieved is to
+leverage document tags. After downloading a document, send a call to the Set Document
+Metadata endpoint to write a tag such as “Downloaded via API.”
+Then, in your Get Document Data call, use the not_document_tag_id parameter to exclude
+documents that have that tag. (Also, limit the date range of the Get Document Data call,
+such as by using the file_upload_time_start parameter.) As an added bonus, you can see
+the document tags in the Intelligent Document Center, which makes it easy to audit which
+documents have been downloaded via the API.
+7/14/26, 9:20 AM
+Canoe API | Best Practices – Canoe Intelligence
+https://help.canoeintelligence.com/hc/en-us/articles/43120591999379-Canoe-API-Best-Practices
+2/5
+Utilize a Service Account for OAuth Authentication
+If you are using OAuth to authenticate and receive your API access token, we recommend
+creating a Service Account user, especially if you plan to automate your API calls.  The
+reasoning is that OAuth credentials are tied to whatever user is logged in when those are
+created.  So if Jane Smith creates the OAuth credentials under her account but leaves her
+company and her Canoe account is turned off, the OAuth credentials will also be disabled,
+breaking any automation that relies upon her OAuth credentials.  However, if the OAuth
+credentials are created under a service account, they will not be at risk of being turned off
+and subsequently breaking automated API calls.
+Steps
+1. Create Service Account User
+1. Create a new user in Canoe with a name such as “API Service Account”
+2. Set the email address to one that you can access but different from the email
+address associated with your Canoe account (this is important so that you receive
+the password creation email)
+3. Click the link in the email that you receive to set the password
+4. After setting the password, you may change the email address.  We recommend
+setting it to a distribution list that multiple people at your company can monitor.
+5. More Info: View / Edit / Create / Delete Users
+2. Create the OAuth Client
+1. Log into Canoe as the service account user
+2. Navigate to the API Configuration page to create the OAuth Client ID and Secret
+3. Note: As mentioned earlier, OAuth credentials are tied to whatever user is logged in
+when those are created.  Therefore, it is important to create the OAuth credentials
+when logged in under the service account.
+4. More Info: Service Client | OAuth Client Credentials Flow
+3. Authenticate Using OAuth
+1. Refer to Canoe's API documentation for how to authenticate using OAuth
+2. More Info: Canoe API Documentation | Managing OAuth Clients
+Getting Help
+Canoe’s support team is here to help you get the most out of our API.  Reach out with any
+questions: support@canoeintelligence.com
+Related to
+7/14/26, 9:20 AM
+Canoe API | Best Practices – Canoe Intelligence
+https://help.canoeintelligence.com/hc/en-us/articles/43120591999379-Canoe-API-Best-Practices
+3/5
+api | canoe api | postman | api documentation | postman collection | api resources
+| best practices | oauth | authentication | pagination | data retrieval | endpoints
+| Timeout | duplicate
+Canoe API_V1 Copy 4.postman_collection.json 100 KB
+Previous article
+Canoe API | Overview
+Next article
+Service Client | OAuth Client Credentials
+Flow
+Recently viewed articles
+Canoe API | Overview
+Fetching an Access Token via Python
+Bulk Categorization via API
+Addepar & Canoe Mapping
+Submit a ticket 
+Email a member of the Canoe Support team for answers
+7/14/26, 9:20 AM
+Canoe API | Best Practices – Canoe Intelligence
+https://help.canoeintelligence.com/hc/en-us/articles/43120591999379-Canoe-API-Best-Practices
+4/5
+Home
+Resources
+Solutions
+7/14/26, 9:20 AM
+Canoe API | Best Practices – Canoe Intelligence
+https://help.canoeintelligence.com/hc/en-us/articles/43120591999379-Canoe-API-Best-Practices
+5/5

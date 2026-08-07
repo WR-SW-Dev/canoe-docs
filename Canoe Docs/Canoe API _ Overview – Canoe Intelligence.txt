@@ -1,0 +1,100 @@
+Canoe Intelligence
+Canoe Intelligence / APIs / APIs
+Search for answers
+Categories
+Canoe API | Overview
+Canoe’s API supports a wide array of use cases, including retrieving data extracted from
+documents,
+downloading documents from Canoe, uploading documents, and managing ownership
+(Entities,
+Funds, Allocations, etc.). See our full API documentation for detailed explanations of API
+endpoints and examples.
+Why Use Canoe's API?
+Canoe's API offers significant advantages over traditional data delivery methods like
+SFTP/FTPS or
+manual downloads, regardless of portfolio size:
+1. Automation & Real-Time Access: The API enables full automation of data ingestion.
+This
+means programmatic data retrieval whenever needed, including near real-time updates
+for critical
+information like ownership changes, new document availability, and more. This
+eliminates manual
+effort and ensures your systems are always current.
+2. Scalability & Reliability: Designed to handle varying data volumes and request
+frequencies, the
+API scales to meet your needs, whether you manage a few funds or thousands. It also
+Hi. Need any help?
+7/14/26, 9:20 AM
+Canoe API | Overview – Canoe Intelligence
+https://help.canoeintelligence.com/hc/en-us/articles/43120297421971-Canoe-API-Overview
+1/4
+provides
+robust error handling and retry mechanisms for reliable data delivery.
+3. Integration & Flexibility: The API allows seamless integration with your existing
+systems, from
+portfolio management platforms to reporting tools and data warehouses. Build custom
+integrations tailored to your specific workflows and data requirements, optimizing your
+data
+management processes.
+4. Efficiency & Cost-Effectiveness: While API integration requires an initial investment,
+the long-
+term benefits are substantial. By automating data delivery, you reduce manual effort,
+minimize errors, and free up resources. This leads to greater operational efficiency and
+potential cost
+savings.
+In short, Canoe's API is the most efficient, scalable, reliable, and flexible solution for data
+access and
+integration. It empowers you to automate processes, access key information quickly, and
+ultimately
+focus on what matters most—managing your investments effectively.
+Postman Collection
+In addition to the bash, JavaScript, php, python, and C# examples next to each endpoint,
+we’ve also
+included a Postman collection. The collection contains API calls for each available endpoint.
+Postman is a tool that helps generate and test API calls by providing a clean interface to
+build and
+save HTTP requests, and to check and test API responses.
+You may download the Postman collection here.  Note: the collection was last updated on
+January 25, 2024. If you are looking for a more recent version, please reach out to our
+support team.
+Rate Limits
+Canoe's standard rate limits are 60 calls per minute per access method (GET, POST, PUT,
+DELETE).  Note that these limits are not based on the endpoint.
+7/14/26, 9:20 AM
+Canoe API | Overview – Canoe Intelligence
+https://help.canoeintelligence.com/hc/en-us/articles/43120297421971-Canoe-API-Overview
+2/4
+IP Whitelisting
+Your information security team may require whitelisting Canoe’s IP addresses before
+you can call the API.  Whitelist this address to allow all API addresses of
+Canoe: outgoing-ips.prod.canoesoftware.com
+Your information technology team may require you to open ports to call the API.  The
+API uses port numbers 443 and 9443.
+Additionally, your information security team may request that Canoe limit the IP
+address(es) from which you can make API calls as an extra layer of data protection.  If
+so, please reach out to our support team.
+Related to
+api | canoe api | postman | api documentation | automation | postman collection
+| rate limits | ip whitelisting | api resources | data retrieval
+Previous article
+Fetching an Access Token via Python
+Next article
+Canoe API | Best Practices
+Recently viewed articles
+Fetching an Access Token via Python
+Bulk Categorization via API
+Canoe API | Best Practices
+Addepar & Canoe Mapping
+7/14/26, 9:20 AM
+Canoe API | Overview – Canoe Intelligence
+https://help.canoeintelligence.com/hc/en-us/articles/43120297421971-Canoe-API-Overview
+3/4
+Submit a ticket 
+Email a member of the Canoe Support team for answers
+Home
+Resources
+Solutions
+7/14/26, 9:20 AM
+Canoe API | Overview – Canoe Intelligence
+https://help.canoeintelligence.com/hc/en-us/articles/43120297421971-Canoe-API-Overview
+4/4

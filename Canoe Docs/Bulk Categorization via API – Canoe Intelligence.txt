@@ -1,0 +1,125 @@
+Canoe Intelligence
+Canoe Intelligence / APIs / APIs
+Search for answers
+Categories
+Bulk Categorization via API
+In this article
+Before you start
+How to use Bulk Categorization via API
+Validation and status updates
+Bulk Categorization lets you correct or update document metadata for many documents
+at once. Instead of updating each document individually, you can pass metadata at upload
+time or update existing documents in bulk — reducing manual cleanup and keeping Canoe
+aligned with your internal systems of record.
+This article covers bulk updates through Canoe’s API. For making bulk changes directly in
+the platform, see Bulk Categorization in the IDC. For general API guidance, see Canoe API |
+Overview and Canoe API | Best Practices. 
+Using the API for Bulk Categorization, you can:
+Set metadata at upload time so documents arrive in Canoe already categorized
+Example: Include fund_id and document_type_id when uploading so documents skip
+manual categorization entirely.
+Update metadata on existing documents in bulk
+Hi. Need any help?
+7/14/26, 9:19 AM
+Bulk Categorization via API – Canoe Intelligence
+https://help.canoeintelligence.com/hc/en-us/articles/50334241994259-Bulk-Categorization-via-API
+1/5
+Example: Reassign a batch of documents to a new fund after an ownership
+restructure.
+Update approval status, comments, tags, and client document ID for up to 100
+documents in a single call
+Example: Mark a set of reviewed documents as approved and tag them for a
+specific reporting period.
+Before you start
+These fields are optional and will not affect any existing API calls.
+Any attributes you provide override Canoe’s predictions. Fields you omit are left as-
+is or predicted by Canoe’s categorization service — for example, you might set fund_id
+and document_type_id explicitly while letting Canoe predict the data date.
+Only one document type and one allocation can be set per document. Multi-
+Document Type categorization and multi-allocation are not supported via API.
+Attribute clearing is handled in the IDC. To clear attributes, use the Clear Attributes
+action in the platform. See Bulk Categorization in the IDC for details.
+How to use Bulk Categorization via API
+See Canoe API | Best Practices for guidance on retrieving document IDs, and refer to the
+API documentation for full endpoint details.
+Set metadata when uploading documents
+When calling PUT: Upload a Single Document, you can include the following fields:
+fund_id — Sets the fund. Always applicable.
+investment_entity_id — Sets the entity. Ignored for fund-level documents.
+allocation_id — Sets the allocation. Ignored for fund-level documents.
+data_date — Sets a single data date for the document.
+document_type_id — Sets the document type. Previously limited to Storage Only; now
+supports any single document type.
+This call accepts up to 100 document IDs at once. All fields are optional — populate only
+the ones you need.
+Update metadata on existing documents
+7/14/26, 9:19 AM
+Bulk Categorization via API – Canoe Intelligence
+https://help.canoeintelligence.com/hc/en-us/articles/50334241994259-Bulk-Categorization-via-API
+2/5
+Use PUT: Set Document Metadata to update metadata on documents that are already in
+Canoe. This endpoint supports the same fields as Upload a Single Document: fund_id (or
+term_id), investment_entity_id, allocation_id, data_date, and document_type_id.
+The same rules apply — see the field descriptions above.
+Update approval status, comments, tags, or client document ID in
+bulk
+Use POST: /v1/documents/metadata to update these fields for multiple documents in a
+single call:
+approval_status
+comment
+tags (with names and overwrite parameters)
+client_document_id
+Batch size: 1 to 100 document IDs per request. Requests exceeding 100 IDs return a 422
+Validation failed error.
+Tag behavior: Setting overwrite: true replaces all existing tags with the provided list.
+Setting overwrite: false appends the provided tags to existing ones.
+Example request
+POST /v1/documents/metadata
+{
+  "ids": ["doc-id-1", "doc-id-2"],
+  "metadata": {
+    "approval_status": "approved",
+    "comment": "Reviewed and approved",
+    "tags": {
+      "names": ["reviewed", "q1-2025"],
+      "overwrite": false
+    },
+    "client_document_id": "CLIENT-123"
+  }
+}
+Validation and status updates
+7/14/26, 9:19 AM
+Bulk Categorization via API – Canoe Intelligence
+https://help.canoeintelligence.com/hc/en-us/articles/50334241994259-Bulk-Categorization-via-API
+3/5
+After any API-driven metadata update, Canoe validates:
+Ownership and entity/fund relationships
+Required fields for each document type
+Other document-type-specific rules
+Document statuses update accordingly. New issues — such as ownership mismatches —
+surface as exceptions. Resolved issues — such as previously missing ownership that is now
+filled — allow documents to move to a complete state.
+Related to
+bulk | categorization
+Previous article
+Canoe Tax User Guide
+Next article
+Fetching an Access Token via Python
+Recently viewed articles
+Canoe API | Best Practices
+Canoe API | Overview
+Fetching an Access Token via Python
+Addepar & Canoe Mapping
+7/14/26, 9:19 AM
+Bulk Categorization via API – Canoe Intelligence
+https://help.canoeintelligence.com/hc/en-us/articles/50334241994259-Bulk-Categorization-via-API
+4/5
+Submit a ticket 
+Email a member of the Canoe Support team for answers
+Home
+Resources
+Solutions
+7/14/26, 9:19 AM
+Bulk Categorization via API – Canoe Intelligence
+https://help.canoeintelligence.com/hc/en-us/articles/50334241994259-Bulk-Categorization-via-API
+5/5

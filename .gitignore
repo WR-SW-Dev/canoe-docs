@@ -1,0 +1,30 @@
+# ---- Secrets: NEVER commit ----
+.env
+*.env
+
+# ---- Virtual environment ----
+.venv/
+
+# ---- Runtime state, logs, caches ----
+.state/
+logs/
+.canoe_last_run.json
+__pycache__/
+*.pyc
+
+# ---- Downloaded documents & archives: NEVER commit client/financial data ----
+archive/
+Private Fund Reporting/
+../Private Fund Reporting/
+*.pdf
+
+# ---- Reclassify / routing artifacts (may reference file paths) ----
+_reclassify_*.json
+_reclassify_*.csv
+_route_*.json
+_route_*.csv
+
+# ---- macOS / editors ----
+.DS_Store
+.idea/
+.vscode/

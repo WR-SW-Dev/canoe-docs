@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Canoe Architecture Packet</title>
+<style>
+:root{
+  --paper:#F5F6F2; --paper-raised:#FFFFFF; --ink:#1B2420; --ink-soft:#4B554E;
+  --rule:#D8D9D2; --accent:#2F6F62; --accent-soft:#E4EEEA;
+  --brass:#8C7A4E; --warn:#9C7A22; --critical:#A3432F; --good:#4B6B2E; --pending:#7A8078;
+  --sky:#2E6B84; --sky-soft:#E1EBF0;
+  --font-display: Georgia, 'Iowan Old Style', 'Palatino Linotype', 'Book Antiqua', serif;
+  --font-body: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Code', 'Roboto Mono', monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --paper:#12161A; --paper-raised:#1A2024; --ink:#E7E9E2; --ink-soft:#A9B0A5;
+    --rule:#2A3128; --accent:#5FB39F; --accent-soft:#1C2A26;
+    --brass:#C9AD79; --warn:#D9A94A; --critical:#D97A63; --good:#8FBE6B; --pending:#8B9188;
+    --sky:#7FB4CC; --sky-soft:#17272E;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#12161A; --paper-raised:#1A2024; --ink:#E7E9E2; --ink-soft:#A9B0A5;
+  --rule:#2A3128; --accent:#5FB39F; --accent-soft:#1C2A26;
+  --brass:#C9AD79; --warn:#D9A94A; --critical:#D97A63; --good:#8FBE6B; --pending:#8B9188;
+  --sky:#7FB4CC; --sky-soft:#17272E;
+}
+:root[data-theme="light"]{
+  --paper:#F5F6F2; --paper-raised:#FFFFFF; --ink:#1B2420; --ink-soft:#4B554E;
+  --rule:#D8D9D2; --accent:#2F6F62; --accent-soft:#E4EEEA;
+  --brass:#8C7A4E; --warn:#9C7A22; --critical:#A3432F; --good:#4B6B2E; --pending:#7A8078;
+  --sky:#2E6B84; --sky-soft:#E1EBF0;
+}
+*{box-sizing:border-box;}
+html,body{background:var(--paper); color:var(--ink); font-family:var(--font-body); margin:0; padding:0; line-height:1.55; font-size:16px;}
+.wrap{max-width:880px; margin:0 auto; padding:64px 24px 120px;}
+a{color:var(--accent);}
+.masthead{border-bottom:2px solid var(--ink); padding-bottom:26px;}
+.eyebrow{font-family:var(--font-mono); font-size:11.5px; letter-spacing:.1em; text-transform:uppercase; color:var(--brass);}
+h1{font-family:var(--font-display); font-weight:600; font-size:clamp(30px,5vw,46px); margin:12px 0 10px; text-wrap:balance; letter-spacing:-.015em;}
+.subtitle{color:var(--ink-soft); font-size:17px; max-width:64ch;}
+.meta-row{display:flex; flex-wrap:wrap; gap:6px 24px; margin-top:20px; font-family:var(--font-mono); font-size:12px; color:var(--ink-soft);}
+.meta-row b{color:var(--ink); font-weight:600;}
+
+.section-label{font-family:var(--font-mono); font-size:11.5px; letter-spacing:.09em; text-transform:uppercase; color:var(--brass); display:flex; align-items:center; gap:10px; margin-top:56px;}
+.section-label::after{content:""; flex:1; height:1px; background:var(--rule);}
+h2{font-family:var(--font-display); font-size:26px; margin:8px 0 6px;}
+p{max-width:70ch;} p.lede{font-size:16.5px; color:var(--ink-soft); max-width:66ch;}
+
+.docs{display:flex; flex-direction:column; gap:14px; margin:26px 0;}
+.doc{display:grid; grid-template-columns:auto 1fr auto; gap:20px; align-items:center; text-decoration:none; color:inherit; background:var(--paper-raised); border:1px solid var(--rule); border-radius:12px; padding:20px 22px; transition:border-color .15s, transform .15s;}
+.doc:hover{border-color:var(--accent); transform:translateX(3px);}
+.doc .idx{font-family:var(--font-display); font-size:30px; color:var(--brass); line-height:1; min-width:34px;}
+.doc .txt h3{font-family:var(--font-display); font-size:20px; margin:0 0 3px;}
+.doc .txt p{margin:0; font-size:14px; color:var(--ink-soft); max-width:60ch;}
+.doc .arrow{color:var(--accent); font-size:20px;}
+.doc.always{border-left:4px solid var(--brass);}
+.doc.track-a{border-left:4px solid var(--good);}
+.doc.track-b{border-left:4px solid var(--sky);}
+.doc.insert{border-left:4px solid var(--accent);}
+.badge{display:inline-block; font-family:var(--font-mono); font-size:9.5px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; padding:2px 7px; border-radius:4px; margin-bottom:6px;}
+.badge.always{background:color-mix(in srgb,var(--brass) 16%,transparent); color:var(--brass);}
+.badge.a{background:color-mix(in srgb,var(--good) 15%,transparent); color:var(--good);}
+.badge.b{background:color-mix(in srgb,var(--sky) 15%,transparent); color:var(--sky);}
+.badge.insert{background:var(--accent-soft); color:var(--accent);}
+
+.parallel{display:grid; grid-template-columns:1fr 1fr; gap:18px; margin:24px 0;}
+.track{border:1px solid var(--rule); border-radius:12px; padding:20px; background:var(--paper-raised);}
+.track.a{border-top:4px solid var(--good);} .track.b{border-top:4px solid var(--sky);}
+.track h3{font-family:var(--font-display); font-size:19px; margin:0 0 6px;}
+.track .k{font-family:var(--font-mono); font-size:11px; color:var(--ink-soft);}
+.track p{font-size:14px; margin:8px 0 0; color:var(--ink-soft);}
+
+.callout{border:1px solid var(--rule); border-left:4px solid var(--critical); background:var(--paper-raised); border-radius:6px; padding:16px 20px; margin:26px 0; max-width:74ch;}
+.callout .cl{font-family:var(--font-mono); font-size:11px; letter-spacing:.07em; text-transform:uppercase; font-weight:700; display:block; margin-bottom:7px; color:var(--critical);}
+.callout p{margin:0; font-size:14.5px;}
+footer{margin-top:72px; padding-top:18px; border-top:2px solid var(--ink); font-family:var(--font-mono); font-size:11.5px; color:var(--ink-soft);}
+@media (max-width:640px){ .parallel{grid-template-columns:1fr;} .doc{grid-template-columns:auto 1fr; } .doc .arrow{display:none;} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="masthead">
+    <div class="eyebrow">Wake Robin · Investment Operations · Architecture Packet</div>
+    <h1>Canoe Automation — Architecture Packet</h1>
+    <p class="subtitle">Two independent systems built on the same Canoe API feed, each proposed in a compliant-today version and a better-with-approval version, framed against the firm's Gen AI policy and decision tree.</p>
+    <div class="meta-row">
+      <span><b>Prepared for</b> Investment Ops</span>
+      <span><b>Date</b> 2026-07-17</span>
+      <span><b>Status</b> Planning — pre-build</span>
+    </div>
+  </div>
+
+  <div class="section-label">Contents</div>
+  <h2>The four documents</h2>
+  <div class="docs">
+    <a class="doc always" href="genai-decision-tree.html">
+      <div class="idx">◆</div>
+      <div class="txt"><span class="badge always">Always included</span><h3>Gen AI Decision-Tree Walkthrough</h3><p>Plain-language reasoning for the firm's tool-selection tree, plus a condensed four-question version. The lens every other document is argued through.</p></div>
+      <div class="arrow">→</div>
+    </a>
+    <a class="doc track-a" href="statement-tracker.html">
+      <div class="idx">A</div>
+      <div class="txt"><span class="badge a">Track A · independent</span><h3>Statement Tracker Dashboard</h3><p>Complements the manual Excel process — less time spent chasing and tracking statements. Metadata-and-rules; no GenAI in the baseline. Compliant v1 + a better v2 that closes the data-date gap.</p></div>
+      <div class="arrow">→</div>
+    </a>
+    <a class="doc track-b" href="intelligence-layer.html">
+      <div class="idx">B</div>
+      <div class="txt"><span class="badge b">Track B · independent</span><h3>Document Intelligence Layer</h3><p>Extracts figures and narrative from the documents themselves; tracks cross-quarter and cross-manager trends. Configurable-LLM node flagged; token-cost levers; compliance gate.</p></div>
+      <div class="arrow">→</div>
+    </a>
+    <a class="doc insert" href="component-genai-table.html">
+      <div class="idx">▦</div>
+      <div class="txt"><span class="badge insert">Packet insert</span><h3>Component × GenAI Role</h3><p>Every component across both systems and exactly how much GenAI it uses. Eight of eleven use none.</p></div>
+      <div class="arrow">→</div>
+    </a>
+  </div>
+
+  <div class="section-label">How to read them</div>
+  <h2>Two tracks, run in parallel</h2>
+  <p class="lede">A and B are independent workstreams. They share the Canoe feed and the archive, but neither depends on the other — so they can be designed and built at the same time.</p>
+  <div class="parallel">
+    <div class="track a">
+      <h3>Track A — Statement Tracker</h3>
+      <div class="k">GenAI: none (v1) · Gate: none (v1)</div>
+      <p>Complements today's manual process — cuts the tracking burden and time spent, without taking the sheet away. Fully compliant out of the gate — nothing to approve to start. The low-risk, high-value first build.</p>
+    </div>
+    <div class="track b">
+      <h3>Track B — Intelligence Layer</h3>
+      <div class="k">GenAI: extraction + RAG · Gate: LLM access path</div>
+      <p>Higher-value, but gated on a compliance decision. Kick off the IT Lead/CTO review in parallel with building A, so B isn't waiting on a review that never started.</p>
+    </div>
+  </div>
+
+  <div class="callout">
+    <span class="cl">The decision that gates Track B (and A's v2)</span>
+    <p>LP statements are financial-account and portfolio-detail documents, which the Gen AI policy restricts to M365 Copilot within the licensed environment. Sending statement text to any other model needs an IT Lead/CTO review via the policy's "request a review of a new LLM" path — an authorization call, not an engineering one. Full detail in the <a href="intelligence-layer.html#gate">intelligence-layer gate</a>.</p>
+  </div>
+
+  <footer>Canoe Automation Architecture Packet · Planning stage, no implementation · Compliance references: Wake Robin Generative AI Chatbot Usage Policy v1.2 (Jan 2026); internal Gen AI Tool Selection Decision Tree</footer>
+</div>
+</body>
+</html>

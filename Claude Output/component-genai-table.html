@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Component × GenAI Role</title>
+<style>
+:root{
+  --paper:#F5F6F2; --paper-raised:#FFFFFF; --ink:#1B2420; --ink-soft:#4B554E;
+  --rule:#D8D9D2; --accent:#2F6F62; --accent-soft:#E4EEEA;
+  --brass:#8C7A4E; --warn:#9C7A22; --critical:#A3432F; --good:#4B6B2E; --pending:#7A8078;
+  --sky:#2E6B84; --sky-soft:#E1EBF0;
+  --font-display: Georgia, 'Iowan Old Style', 'Palatino Linotype', 'Book Antiqua', serif;
+  --font-body: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Code', 'Roboto Mono', monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --paper:#12161A; --paper-raised:#1A2024; --ink:#E7E9E2; --ink-soft:#A9B0A5;
+    --rule:#2A3128; --accent:#5FB39F; --accent-soft:#1C2A26;
+    --brass:#C9AD79; --warn:#D9A94A; --critical:#D97A63; --good:#8FBE6B; --pending:#8B9188;
+    --sky:#7FB4CC; --sky-soft:#17272E;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#12161A; --paper-raised:#1A2024; --ink:#E7E9E2; --ink-soft:#A9B0A5;
+  --rule:#2A3128; --accent:#5FB39F; --accent-soft:#1C2A26;
+  --brass:#C9AD79; --warn:#D9A94A; --critical:#D97A63; --good:#8FBE6B; --pending:#8B9188;
+  --sky:#7FB4CC; --sky-soft:#17272E;
+}
+:root[data-theme="light"]{
+  --paper:#F5F6F2; --paper-raised:#FFFFFF; --ink:#1B2420; --ink-soft:#4B554E;
+  --rule:#D8D9D2; --accent:#2F6F62; --accent-soft:#E4EEEA;
+  --brass:#8C7A4E; --warn:#9C7A22; --critical:#A3432F; --good:#4B6B2E; --pending:#7A8078;
+  --sky:#2E6B84; --sky-soft:#E1EBF0;
+}
+*{box-sizing:border-box;}
+html,body{background:var(--paper); color:var(--ink); font-family:var(--font-body); margin:0; padding:0; line-height:1.55; font-size:16px;}
+.wrap{max-width:960px; margin:0 auto; padding:56px 24px 120px;}
+a{color:var(--accent);}
+.packet-nav{font-family:var(--font-mono); font-size:11.5px; letter-spacing:.05em; color:var(--ink-soft); margin-bottom:22px; display:flex; flex-wrap:wrap; gap:6px 14px;}
+.packet-nav a{text-decoration:none; border-bottom:1px solid var(--rule);}
+.packet-nav a:hover{border-color:var(--accent);}
+.packet-nav .here{color:var(--brass); border-bottom:1px solid var(--brass);}
+.masthead{border-bottom:2px solid var(--ink); padding-bottom:22px;}
+.eyebrow{font-family:var(--font-mono); font-size:11.5px; letter-spacing:.09em; text-transform:uppercase; color:var(--brass);}
+h1{font-family:var(--font-display); font-weight:600; font-size:clamp(26px,4vw,38px); margin:10px 0 8px; text-wrap:balance; letter-spacing:-.01em;}
+.subtitle{color:var(--ink-soft); font-size:16px; max-width:70ch;}
+.section-label{font-family:var(--font-mono); font-size:11.5px; letter-spacing:.09em; text-transform:uppercase; color:var(--brass); display:flex; align-items:center; gap:10px; margin-top:52px;}
+.section-label::after{content:""; flex:1; height:1px; background:var(--rule);}
+h2{font-family:var(--font-display); font-size:25px; margin:8px 0 6px; text-wrap:balance;}
+p{max-width:74ch;} p.lede{font-size:16px; color:var(--ink-soft); max-width:70ch;}
+
+.table-scroll{overflow-x:auto; margin:22px 0; border:1px solid var(--rule); border-radius:10px;}
+table{border-collapse:collapse; width:100%; font-size:14px; min-width:720px;}
+thead th{font-family:var(--font-mono); font-size:10.5px; letter-spacing:.05em; text-transform:uppercase; color:var(--ink-soft); text-align:left; padding:12px 16px; background:var(--accent-soft); border-bottom:2px solid var(--rule); white-space:nowrap;}
+tbody td{padding:12px 16px; border-bottom:1px solid var(--rule); vertical-align:top;}
+tbody tr:last-child td{border-bottom:none;}
+tbody tr:hover{background:var(--accent-soft);}
+td .comp{font-weight:700; display:block; margin-bottom:2px;}
+td .resp{font-size:13px; color:var(--ink-soft);}
+.arch-a{border-left:3px solid var(--good);}
+.arch-b{border-left:3px solid var(--sky);}
+
+.pill{display:inline-block; font-family:var(--font-mono); font-size:10.5px; letter-spacing:.03em; padding:3px 9px; border-radius:99px; font-weight:600; white-space:nowrap;}
+.pill.none{background:color-mix(in srgb,var(--good) 16%,transparent); color:var(--good);}
+.pill.llm{background:color-mix(in srgb,var(--sky) 16%,transparent); color:var(--sky);}
+.pill.rag{background:color-mix(in srgb,var(--brass) 18%,transparent); color:var(--brass);}
+.pill.human{background:color-mix(in srgb,var(--warn) 18%,transparent); color:var(--warn);}
+.tag{font-family:var(--font-mono); font-size:10px; font-weight:700; letter-spacing:.04em; padding:2px 7px; border-radius:4px;}
+.tag.a{background:color-mix(in srgb,var(--good) 15%,transparent); color:var(--good);}
+.tag.b{background:color-mix(in srgb,var(--sky) 15%,transparent); color:var(--sky);}
+
+.legend{display:flex; flex-wrap:wrap; gap:10px 20px; margin:18px 0 0; font-size:13px; color:var(--ink-soft);}
+.legend span{display:inline-flex; align-items:center; gap:8px;}
+
+.callout{border:1px solid var(--rule); border-left:4px solid var(--accent); background:var(--paper-raised); border-radius:6px; padding:16px 20px; margin:26px 0; max-width:76ch;}
+.callout .cl{font-family:var(--font-mono); font-size:11px; letter-spacing:.07em; text-transform:uppercase; font-weight:700; display:block; margin-bottom:7px; color:var(--accent);}
+.callout p{margin:0; font-size:14.5px;}
+footer{margin-top:72px; padding-top:18px; border-top:2px solid var(--ink); font-family:var(--font-mono); font-size:11.5px; color:var(--ink-soft);}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav class="packet-nav">
+    <a href="index.html">◆ Packet index</a>
+    <a href="genai-decision-tree.html">Decision-tree walkthrough</a>
+    <a href="statement-tracker.html">A · Statement tracker</a>
+    <a href="intelligence-layer.html">B · Intelligence layer</a>
+    <span class="here">Component × GenAI table</span>
+  </nav>
+
+  <div class="masthead">
+    <div class="eyebrow">Wake Robin · Investment Ops · Packet Insert</div>
+    <h1>Component × GenAI Role</h1>
+    <p class="subtitle">Every component across both architectures, and exactly how much — if any — generative AI it uses. The pattern to notice: GenAI is confined to a single job, converting messy language into structured data. Everything else is deterministic.</p>
+  </div>
+
+  <div class="section-label">The breakdown</div>
+  <h2>Where GenAI is used, and where it isn't</h2>
+
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Component</th><th>Track</th><th>GenAI role</th><th>Why / decision-tree verdict</th></tr>
+      </thead>
+      <tbody>
+        <tr class="arch-a">
+          <td><span class="comp">Poller</span><span class="resp">Delta-fetch new document metadata on a schedule</span></td>
+          <td><span class="tag a">A</span></td>
+          <td><span class="pill none">None</span></td>
+          <td>Deterministic API calls. Stops at decision-tree gate 2.</td>
+        </tr>
+        <tr class="arch-a">
+          <td><span class="comp">Tracking DB</span><span class="resp">Queryable store of documents + allocations</span></td>
+          <td><span class="tag a">A</span></td>
+          <td><span class="pill none">None</span></td>
+          <td>Storage. No language task.</td>
+        </tr>
+        <tr class="arch-a">
+          <td><span class="comp">Expected schedule</span><span class="resp">Firm × Fund × frequency, sourced from Excel</span></td>
+          <td><span class="tag a">A</span></td>
+          <td><span class="pill none">None</span></td>
+          <td>Structured config, ops-owned. Rules, not a model.</td>
+        </tr>
+        <tr class="arch-a">
+          <td><span class="comp">Reconciliation engine</span><span class="resp">Match received vs. expected; flag overdue / anomalous</span></td>
+          <td><span class="tag a">A</span></td>
+          <td><span class="pill none">None</span></td>
+          <td>A filing either arrived for a period or it didn't — deterministic. Gate 2 → rules / SQL.</td>
+        </tr>
+        <tr class="arch-a">
+          <td><span class="comp">Data-date extractor</span><span class="resp">Read period-end date off exception documents</span></td>
+          <td><span class="tag a">A · v2</span></td>
+          <td><span class="pill llm">LLM · scoped</span></td>
+          <td>Format varies across GPs, so rules alone miss the tail. One field, cheapest model, validated against expected period. Needs approval (document content).</td>
+        </tr>
+        <tr class="arch-a">
+          <td><span class="comp">Dashboard + alerts</span><span class="resp">Firm/Fund/Period grid; overdue + anomaly notices</span></td>
+          <td><span class="tag a">A</span></td>
+          <td><span class="pill none">None</span></td>
+          <td>Presentation + rules-based triggers.</td>
+        </tr>
+
+        <tr class="arch-b">
+          <td><span class="comp">Text / table extraction</span><span class="resp">PDF → text and tables per document</span></td>
+          <td><span class="tag b">B</span></td>
+          <td><span class="pill none">None</span></td>
+          <td>Deterministic parsing (pdfplumber / PyMuPDF). Prep step before any model.</td>
+        </tr>
+        <tr class="arch-b">
+          <td><span class="comp">Structured field extraction</span><span class="resp">NAV, capital account, fees, IRR, called / distributed</span></td>
+          <td><span class="tag b">B</span></td>
+          <td><span class="pill llm">LLM · confidence-scored</span></td>
+          <td>Formats vary too widely for regex to scale, output is checkable against prior periods. Gate 5 → standalone GenAI. Runs at the configurable LLM node.</td>
+        </tr>
+        <tr class="arch-b">
+          <td><span class="comp">Human review queue</span><span class="resp">Anything below confidence, or any alert-triggering figure</span></td>
+          <td><span class="tag b">B</span></td>
+          <td><span class="pill human">Human verify</span></td>
+          <td>Required by the policy's content-verification rule regardless of confidence score.</td>
+        </tr>
+        <tr class="arch-b">
+          <td><span class="comp">Structured warehouse</span><span class="resp">Fund × Period × Metric time series</span></td>
+          <td><span class="tag b">B</span></td>
+          <td><span class="pill none">None</span></td>
+          <td>Storage of already-structured data.</td>
+        </tr>
+        <tr class="arch-b">
+          <td><span class="comp">Trend engine</span><span class="resp">NAV drift, fee escalation, top-holdings churn, manager comparison</span></td>
+          <td><span class="tag b">B</span></td>
+          <td><span class="pill none">None</span></td>
+          <td>Deterministic arithmetic over structured fields. Gate 2 → pure SQL. No per-query model calls.</td>
+        </tr>
+        <tr class="arch-b">
+          <td><span class="comp">Narrative synthesis</span><span class="resp">Cross-quarter / cross-manager commentary for the digest</span></td>
+          <td><span class="tag b">B</span></td>
+          <td><span class="pill rag">GenAI + RAG</span></td>
+          <td>Depends on our own filing history → retrieval-augmented, not standalone. Gate 5 → GenAI + RAG. Attributed per policy.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="legend">
+    <span><span class="pill none">None</span> Deterministic — rules / SQL / parsing</span>
+    <span><span class="pill llm">LLM</span> Model call at the configurable node</span>
+    <span><span class="pill rag">GenAI + RAG</span> Grounded on our own documents</span>
+    <span><span class="pill human">Human verify</span> Policy-required review</span>
+  </div>
+
+  <div class="callout">
+    <span class="cl">The headline</span>
+    <p>Of eleven components across both systems, eight use no generative AI at all. GenAI appears at exactly three points — reading a date off an exception document (A·v2), pulling figures out of varied statement formats (B), and writing cross-period narrative (B) — and only the last of those needs our proprietary data. The expensive, deterministic work stays in SQL, which is cheaper, faster, and fully auditable.</p>
+  </div>
+
+  <footer>Component × GenAI Role · Insert for the Canoe architecture packet · Verdicts trace the internal Gen AI Tool Selection Decision Tree — see the <a href="genai-decision-tree.html">walkthrough</a></footer>
+</div>
+</body>
+</html>

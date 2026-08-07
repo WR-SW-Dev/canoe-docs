@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<!-- saved from url=(0062)file:///Users/jasonbyrne/Downloads/gen_ai_decision_tree_1.html -->
+<html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: #0f1117;
+    color: #e2e8f0;
+    min-height: 100vh;
+    padding: 32px 20px;
+  }
+  h2 {
+    text-align: center;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #94a3b8;
+    margin-bottom: 36px;
+  }
+  svg { display: block; margin: 0 auto; }
+</style>
+</head>
+<body>
+<h2>Gen AI Tool Selection Decision Tree</h2>
+<svg viewBox="0 0 780 880" xmlns="http://www.w3.org/2000/svg" width="780" height="880">
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#475569"></path>
+    </marker>
+    <marker id="ay" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#22c55e"></path>
+    </marker>
+    <marker id="an" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#ef4444"></path>
+    </marker>
+  </defs>
+
+  <!-- Q1 diamond -->
+  <polygon points="390,32 510,68 390,104 270,68" fill="#1e293b" stroke="#6366f1" stroke-width="2"></polygon>
+  <text font-size="12" fill="#e2e8f0" text-anchor="middle" x="390" y="62" font-family="Segoe UI,system-ui">Can output quality</text>
+  <text font-size="12" fill="#e2e8f0" text-anchor="middle" x="390" y="76" font-family="Segoe UI,system-ui">be measured clearly?</text>
+
+  <!-- NO left -->
+  <line x1="270" y1="68" x2="128" y2="68" stroke="#ef4444" stroke-width="1.5" marker-end="url(#an)"></line>
+  <text font-size="10.5" fill="#ef4444" font-weight="600" x="188" y="60" font-family="Segoe UI,system-ui">NO</text>
+  <rect x="18" y="40" width="110" height="56" rx="8" fill="#1f1a28" stroke="#a78bfa" stroke-width="2"></rect>
+  <text font-size="11" fill="#c4b5fd" text-anchor="middle" x="73" y="62" font-family="Segoe UI,system-ui" font-weight="600">Refine Use</text>
+  <text font-size="11" fill="#c4b5fd" text-anchor="middle" x="73" y="76" font-family="Segoe UI,system-ui" font-weight="600">Case &amp; Restart</text>
+
+  <!-- YES down -->
+  <line x1="390" y1="104" x2="390" y2="148" stroke="#22c55e" stroke-width="1.5" marker-end="url(#ay)"></line>
+  <text font-size="10.5" fill="#22c55e" font-weight="600" x="397" y="130" font-family="Segoe UI,system-ui">YES</text>
+
+  <!-- Q2 diamond -->
+  <polygon points="390,156 530,192 390,228 250,192" fill="#1e293b" stroke="#6366f1" stroke-width="2"></polygon>
+  <text font-size="12" fill="#e2e8f0" text-anchor="middle" x="390" y="186" font-family="Segoe UI,system-ui">Does the task require</text>
+  <text font-size="12" fill="#e2e8f0" text-anchor="middle" x="390" y="200" font-family="Segoe UI,system-ui">deterministic accuracy?</text>
+
+  <!-- YES right -->
+  <line x1="530" y1="192" x2="652" y2="192" stroke="#22c55e" stroke-width="1.5" marker-end="url(#ay)"></line>
+  <text font-size="10.5" fill="#22c55e" font-weight="600" x="573" y="184" font-family="Segoe UI,system-ui">YES</text>
+  <rect x="652" y="162" width="116" height="60" rx="8" fill="#1a1a2e" stroke="#ef4444" stroke-width="2"></rect>
+  <text font-size="11" fill="#fca5a5" text-anchor="middle" x="710" y="183" font-family="Segoe UI,system-ui" font-weight="600">Use Rules, SQL</text>
+  <text font-size="11" fill="#fca5a5" text-anchor="middle" x="710" y="197" font-family="Segoe UI,system-ui" font-weight="600">or ML.</text>
+  <text font-size="11" fill="#fca5a5" text-anchor="middle" x="710" y="211" font-family="Segoe UI,system-ui" font-weight="600">Avoid GenAI</text>
+
+  <!-- NO down -->
+  <line x1="390" y1="228" x2="390" y2="272" stroke="#ef4444" stroke-width="1.5" marker-end="url(#an)"></line>
+  <text font-size="10.5" fill="#ef4444" font-weight="600" x="397" y="254" font-family="Segoe UI,system-ui">NO</text>
+
+  <!-- Q3 diamond -->
+  <polygon points="390,280 540,316 390,352 240,316" fill="#1e293b" stroke="#6366f1" stroke-width="2"></polygon>
+  <text font-size="12" fill="#e2e8f0" text-anchor="middle" x="390" y="309" font-family="Segoe UI,system-ui">Does the task involve language</text>
+  <text font-size="12" fill="#e2e8f0" text-anchor="middle" x="390" y="323" font-family="Segoe UI,system-ui">generation or understanding?</text>
+
+  <!-- NO left -->
+  <line x1="240" y1="316" x2="128" y2="316" stroke="#ef4444" stroke-width="1.5" marker-end="url(#an)"></line>
+  <text font-size="10.5" fill="#ef4444" font-weight="600" x="170" y="308" font-family="Segoe UI,system-ui">NO</text>
+  <rect x="18" y="288" width="110" height="56" rx="8" fill="#1a120a" stroke="#fbbf24" stroke-width="2"></rect>
+  <text font-size="11" fill="#fde68a" text-anchor="middle" x="73" y="310" font-family="Segoe UI,system-ui" font-weight="600">Use SQL or</text>
+  <text font-size="11" fill="#fde68a" text-anchor="middle" x="73" y="324" font-family="Segoe UI,system-ui" font-weight="600">Rules-Based</text>
+  <text font-size="11" fill="#fde68a" text-anchor="middle" x="73" y="338" font-family="Segoe UI,system-ui" font-weight="600">Logic</text>
+
+  <!-- YES down -->
+  <line x1="390" y1="352" x2="390" y2="396" stroke="#22c55e" stroke-width="1.5" marker-end="url(#ay)"></line>
+  <text font-size="10.5" fill="#22c55e" font-weight="600" x="397" y="378" font-family="Segoe UI,system-ui">YES</text>
+
+  <!-- Q4 diamond -->
+  <polygon points="390,404 540,440 390,476 240,440" fill="#1e293b" stroke="#6366f1" stroke-width="2"></polygon>
+  <text font-size="12" fill="#e2e8f0" text-anchor="middle" x="390" y="433" font-family="Segoe UI,system-ui">Does the task require synthesis</text>
+  <text font-size="12" fill="#e2e8f0" text-anchor="middle" x="390" y="447" font-family="Segoe UI,system-ui">or open-ended output?</text>
+
+  <!-- NO right -->
+  <line x1="540" y1="440" x2="652" y2="440" stroke="#ef4444" stroke-width="1.5" marker-end="url(#an)"></line>
+  <text font-size="10.5" fill="#ef4444" font-weight="600" x="580" y="432" font-family="Segoe UI,system-ui">NO</text>
+  <rect x="652" y="412" width="116" height="56" rx="8" fill="#1a1205" stroke="#fb923c" stroke-width="2"></rect>
+  <text font-size="11" fill="#fdba74" text-anchor="middle" x="710" y="434" font-family="Segoe UI,system-ui" font-weight="600">Consider ML</text>
+  <text font-size="11" fill="#fdba74" text-anchor="middle" x="710" y="450" font-family="Segoe UI,system-ui" font-weight="600">or Classification</text>
+
+  <!-- YES down -->
+  <line x1="390" y1="476" x2="390" y2="518" stroke="#22c55e" stroke-width="1.5" marker-end="url(#ay)"></line>
+  <text font-size="10.5" fill="#22c55e" font-weight="600" x="397" y="501" font-family="Segoe UI,system-ui">YES</text>
+
+  <!-- Consider GenAI interim box -->
+  <rect x="308" y="518" width="164" height="44" rx="8" fill="#0d1f0d" stroke="#22c55e" stroke-width="2"></rect>
+  <text font-size="12" fill="#86efac" text-anchor="middle" x="390" y="536" font-family="Segoe UI,system-ui" font-weight="600">Consider GenAI</text>
+  <text font-size="10" fill="#6ee7b7" text-anchor="middle" x="390" y="551" font-family="Segoe UI,system-ui">— one more check ↓</text>
+
+  <!-- down -->
+  <line x1="390" y1="562" x2="390" y2="606" stroke="#22c55e" stroke-width="1.5" marker-end="url(#ay)"></line>
+
+  <!-- Q5 diamond -->
+  <polygon points="390,614 550,650 390,686 230,650" fill="#1e293b" stroke="#6366f1" stroke-width="2"></polygon>
+  <text font-size="12" fill="#e2e8f0" text-anchor="middle" x="390" y="643" font-family="Segoe UI,system-ui">Does the task depend on</text>
+  <text font-size="12" fill="#e2e8f0" text-anchor="middle" x="390" y="657" font-family="Segoe UI,system-ui">proprietary enterprise knowledge?</text>
+
+  <!-- YES left -->
+  <line x1="230" y1="650" x2="128" y2="650" stroke="#22c55e" stroke-width="1.5" marker-end="url(#ay)"></line>
+  <text font-size="10.5" fill="#22c55e" font-weight="600" x="162" y="642" font-family="Segoe UI,system-ui">YES</text>
+  <rect x="18" y="620" width="110" height="60" rx="8" fill="#0d1a2e" stroke="#38bdf8" stroke-width="2"></rect>
+  <text font-size="11" fill="#7dd3fc" text-anchor="middle" x="73" y="642" font-family="Segoe UI,system-ui" font-weight="600">GenAI + RAG</text>
+  <text font-size="10" fill="#7dd3fc" text-anchor="middle" x="73" y="656" font-family="Segoe UI,system-ui">(Retrieval-</text>
+  <text font-size="10" fill="#7dd3fc" text-anchor="middle" x="73" y="670" font-family="Segoe UI,system-ui">Augmented)</text>
+
+  <!-- NO right -->
+  <line x1="550" y1="650" x2="652" y2="650" stroke="#ef4444" stroke-width="1.5" marker-end="url(#an)"></line>
+  <text font-size="10.5" fill="#ef4444" font-weight="600" x="584" y="642" font-family="Segoe UI,system-ui">NO</text>
+  <rect x="652" y="620" width="116" height="60" rx="8" fill="#0d1f0d" stroke="#22c55e" stroke-width="2"></rect>
+  <text font-size="11" fill="#86efac" text-anchor="middle" x="710" y="642" font-family="Segoe UI,system-ui" font-weight="600">Standalone</text>
+  <text font-size="11" fill="#86efac" text-anchor="middle" x="710" y="656" font-family="Segoe UI,system-ui" font-weight="600">GenAI</text>
+  <text font-size="11" fill="#86efac" text-anchor="middle" x="710" y="670" font-family="Segoe UI,system-ui" font-weight="600">Sufficient</text>
+
+  <!-- LEGEND -->
+  <rect x="18" y="760" width="744" height="100" rx="10" fill="#1e293b" stroke="#334155" stroke-width="1"></rect>
+  <text x="40" y="780" font-size="10" fill="#64748b" font-family="Segoe UI,system-ui" font-weight="700" letter-spacing="0.05em">LEGEND</text>
+
+  <rect x="40" y="790" width="12" height="12" rx="2" fill="#1e293b" stroke="#6366f1" stroke-width="1.5"></rect>
+  <text x="58" y="801" font-size="10" fill="#94a3b8" font-family="Segoe UI,system-ui">Decision Node</text>
+
+  <rect x="160" y="790" width="12" height="12" rx="2" fill="#0d1f0d" stroke="#22c55e" stroke-width="1.5"></rect>
+  <text x="178" y="801" font-size="10" fill="#94a3b8" font-family="Segoe UI,system-ui">GenAI Path</text>
+
+  <rect x="270" y="790" width="12" height="12" rx="2" fill="#0d1a2e" stroke="#38bdf8" stroke-width="1.5"></rect>
+  <text x="288" y="801" font-size="10" fill="#94a3b8" font-family="Segoe UI,system-ui">GenAI + RAG</text>
+
+  <rect x="390" y="790" width="12" height="12" rx="2" fill="#1a1205" stroke="#fb923c" stroke-width="1.5"></rect>
+  <text x="408" y="801" font-size="10" fill="#94a3b8" font-family="Segoe UI,system-ui">ML / Classification</text>
+
+  <rect x="530" y="790" width="12" height="12" rx="2" fill="#1a120a" stroke="#fbbf24" stroke-width="1.5"></rect>
+  <text x="548" y="801" font-size="10" fill="#94a3b8" font-family="Segoe UI,system-ui">Rules / SQL</text>
+
+  <rect x="640" y="790" width="12" height="12" rx="2" fill="#1a1a2e" stroke="#ef4444" stroke-width="1.5"></rect>
+  <text x="658" y="801" font-size="10" fill="#94a3b8" font-family="Segoe UI,system-ui">Avoid GenAI</text>
+
+  <text x="40" y="830" font-size="10" fill="#475569" font-family="Segoe UI,system-ui">Green lines = YES path   ·   Red lines = NO path</text>
+  <text x="40" y="846" font-size="10" fill="#334155" font-family="Segoe UI,system-ui">Diamonds = decision points   ·   Rectangles = outcomes</text>
+</svg>
+
+
+</body></html>
