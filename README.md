@@ -42,6 +42,7 @@ No laptop needs to be awake — the Mac Mini handles it.
 ```
 canoe-docs/
 ├── install.sh                   # One-shot installer for a new machine
+├── setup.py                     # Credential wizard: local web form -> writes .env secrets
 ├── run_weekly.sh                # What the scheduler runs each Monday (self-locating)
 ├── co.wakerobin.canoe.weekly.plist  # launchd job (reference; install.sh generates a per-machine copy)
 ├── requirements.txt
@@ -95,15 +96,28 @@ activity log are all gitignored.
    ./install.sh
    ```
 
-4. **Add Canoe credentials** to `py files/.env` (gitignored). Most secure alternative: macOS Keychain.
+4. **Add Canoe credentials** using the guided wizard:
+   ```bash
+   python setup.py
+   ```
+   It starts a local page (localhost only — nothing is transmitted), you enter the
+   credentials in the form, and it writes them to `py files/.env` with owner-only
+   permissions, then shuts down. Provide the Client ID + Secret and/or the
+   service-account username + password.
+
+   *Alternatively*, hand-edit `py files/.env` (gitignored):
    ```bash
    CANOE_CLIENT_ID=...
    CANOE_CLIENT_SECRET=...
-   # Fallback (used automatically if client-credentials is disabled for the tenant):
-   CANOE_USERNAME=service_account_email
-   CANOE_PASSWORD=service_account_password
+   CANOE_USERNAME=service_account_email        # optional fallback auth
+   CANOE_PASSWORD=service_account_password     # optional fallback auth
    # CANOE_ORGANIZATION_ID=only_if_multiple_orgs
    ```
+
+   > **Receiving the credentials:** have them sent to whoever deploys this over a
+   > secure channel (encrypted email, or better, a password manager / one-time secret
+   > link) and entered directly into the setup form. They should never be pasted into
+   > chat or code, or committed to Git.
 
 5. **Verify credentials:**
    ```bash

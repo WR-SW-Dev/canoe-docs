@@ -74,7 +74,9 @@ cat <<NEXT
 
 Install steps complete. Remaining manual steps:
 
-  1. Add Canoe credentials to '$BASE/py files/.env' (or macOS Keychain). See README.
+  1. Add Canoe credentials with the guided wizard (opens a local page):
+       "$BASE/.venv/bin/python" "$BASE/setup.py"
+     (or hand-edit '$BASE/py files/.env' -- see README)
   2. Verify:
        cd "$BASE/py files" && ../.venv/bin/python credentials_check.py
   3. Schedule the weekly job:
