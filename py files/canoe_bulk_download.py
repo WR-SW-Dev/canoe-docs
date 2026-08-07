@@ -30,6 +30,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import csv
 import glob
 import io
 import json
@@ -167,8 +168,8 @@ def existing_variants(base_target: str) -> dict[int, str]:
     return variants
 
 
-def safe_extract(zf: zipfile.ZipFile, dest: str, organizer, seen: dict) -> tuple[int, int, int]:
-    """Content-aware extract. Returns (written, existed, deduped)."""
+def safe_extract(zf: zipfile.ZipFile, dest: str, organizer, seen: dict, written_paths: list) -> tuple[int, int, int]:
+    """Content-aware extract. Returns (written, existed, deduped); appends new relpaths to written_paths."""
     dest_abs = os.path.abspath(dest)
     written = existed = deduped = 0
     for member in zf.infolist():
@@ -198,6 +199,7 @@ def safe_extract(zf: zipfile.ZipFile, dest: str, organizer, seen: dict) -> tuple
         with zf.open(member) as src, open(cand, "wb") as out:
             out.write(src.read())
         written += 1
+        written_paths.append(os.path.relpath(cand, dest_abs))
     return written, existed, deduped
 
 
@@ -223,6 +225,26 @@ def resolve_since(args) -> str | None:
     return None
 
 
+def default_run_log(args) -> str:
+    if args.run_log:
+        return args.run_log
+    sd = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(os.path.dirname(sd), "run_history.csv")
+
+
+def append_run_log(path: str, run_utc: str, mode: str, docs: int, new: int, dup: int, elapsed_min: float) -> None:
+    """Timestamps + counts only -- no file names, safe to keep in Git."""
+    try:
+        is_new = not os.path.exists(path)
+        with open(path, "a", newline="") as f:
+            wr = csv.writer(f)
+            if is_new:
+                wr.writerow(["run_utc", "mode", "documents_seen", "new_files", "duplicates", "elapsed_min"])
+            wr.writerow([run_utc, mode, docs, new, dup, elapsed_min])
+    except OSError as exc:
+        print(f"  (could not write run history: {exc})")
+
+
 # --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
@@ -240,6 +262,10 @@ def main() -> None:
     ap.add_argument("--state", default=None, help="Last-run state JSON (used with --since auto).")
     ap.add_argument("--lookback-days", type=int, default=8,
                     help="First incremental run with no state looks back this many days.")
+    ap.add_argument("--activity-log", default=None,
+                    help="Per-file log WITH names, kept beside the archive (default: <dest>/_download_activity.csv). Never commit to Git.")
+    ap.add_argument("--run-log", default=None,
+                    help="Run-history log: timestamps + counts only, NO file names (default: <repo>/run_history.csv). Safe for Git.")
     args = ap.parse_args()
 
     dest = os.path.abspath(os.path.expanduser(args.dest))
@@ -269,12 +295,15 @@ def main() -> None:
     print(f"Canoe reports {total} document(s) across {total_pages} page(s).")
     if total == 0:
         print("Nothing to fetch.")
+        append_run_log(default_run_log(args), run_start.isoformat(),
+                       f"incremental since {since}" if since else "full", 0, 0, 0, 0.0)
         if args.since == "auto" and args.state:
             json.dump({"last_run_iso": run_start.isoformat()}, open(args.state, "w"), indent=2)
         return
     print(f"Downloading pages {args.start_page}..{last_page}.\n")
 
     tw = te = td = docs = 0
+    written_paths: list = []
     t0 = time.time()
     page, current = args.start_page, resp
     while page <= last_page:
@@ -287,7 +316,7 @@ def main() -> None:
         if n == 0:
             print(f"  Page {page}: empty -- done.")
             break
-        w, e, d = safe_extract(zf, dest, organizer, seen)
+        w, e, d = safe_extract(zf, dest, organizer, seen, written_paths)
         tw += w; te += e; td += d; docs += n
         mb = len(current.content) / 1048576
         print(f"  Page {page}/{last_page}: {n} docs, {mb:.1f} MB (new {w}, dup {d}) | {docs} seen, {(time.time()-t0)/60:.1f} min")
@@ -298,6 +327,32 @@ def main() -> None:
         if page > last_page:
             break
         current = fetch_page(page, args.limit)
+
+    mode = f"incremental since {since}" if since else "full"
+
+    # Detailed activity log (WITH file names) -- lives beside the archive (SharePoint), NEVER in Git.
+    if written_paths:
+        alog = args.activity_log or os.path.join(dest, "_download_activity.csv")
+        try:
+            is_new = not os.path.exists(alog)
+            with open(alog, "a", newline="") as f:
+                wr = csv.writer(f)
+                if is_new:
+                    wr.writerow(["run_utc", "mode", "relpath", "manager", "year", "category"])
+                for rp in written_paths:
+                    parts = rp.split(os.sep)
+                    wr.writerow([run_start.isoformat(), mode, rp,
+                                 parts[0] if len(parts) > 0 else "",
+                                 parts[1] if len(parts) > 1 else "",
+                                 parts[2] if len(parts) > 2 else ""])
+            print(f"  activity log      : {alog}")
+        except OSError as exc:
+            print(f"  (could not write activity log: {exc})")
+
+    # Run-history log (timestamps + counts only, NO file names) -- safe to keep in Git.
+    run_log = default_run_log(args)
+    append_run_log(run_log, run_start.isoformat(), mode, docs, tw, td, round((time.time() - t0) / 60, 2))
+    print(f"  run history       : {run_log}")
 
     # Only advance the state after a clean pass, so a crash never skips documents.
     if args.since == "auto" and args.state:

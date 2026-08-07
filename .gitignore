@@ -18,11 +18,14 @@ Private Fund Reporting/
 ../Private Fund Reporting/
 *.pdf
 
-# ---- Reclassify / routing artifacts (may reference file paths) ----
+# ---- Reclassify / routing / activity artifacts (contain file names) ----
 _reclassify_*.json
 _reclassify_*.csv
 _route_*.json
 _route_*.csv
+_download_activity*.csv
+
+# NOTE: run_history.csv is intentionally NOT ignored — it holds run timestamps + counts only (no file names).
 
 # ---- macOS / editors ----
 .DS_Store

@@ -153,6 +153,22 @@ runs at next wake. Keep the Mini powered on.
 
 ---
 
+## Logs
+
+Two logs, deliberately split so **file names never reach Git**:
+
+| Log | Location | Contents | In Git? |
+|---|---|---|---|
+| `run_history.csv` | repo root | One row per run — timestamp, mode, docs seen, new, duplicates, elapsed. **No file names.** | ✅ yes |
+| `_download_activity.csv` | beside the archive (SharePoint) | One row per downloaded file — timestamp, path, manager, year, category. | ❌ never (gitignored) |
+| `logs/weekly.log` | repo `logs/` (local) | Verbose per-run console output. | ❌ no (gitignored) |
+
+`run_history.csv` is the shareable audit trail of *when* pulls ran and *how much*
+arrived; the per-file detail stays with the documents in SharePoint. Every run is
+recorded — including weeks with zero new documents.
+
+---
+
 ## Roadmap / known limits
 
 The download & filing are solved. What deterministic (no-AI) tooling **cannot**
