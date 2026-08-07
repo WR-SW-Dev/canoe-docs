@@ -37,12 +37,27 @@ No laptop needs to be awake — the Mac Mini handles it.
 
 ---
 
+## How files reach SharePoint
+
+The code has **no SharePoint credentials and makes no SharePoint API calls.** It
+writes documents to a local folder (`CANOE_ARCHIVE_DIR`); the **OneDrive desktop
+client** syncs that folder to SharePoint, authenticated by the account signed into
+OneDrive on the device. SharePoint write access is therefore governed entirely by
+that signed-in account — nothing in this repo.
+
+**Recommended:** sign the device's OneDrive into a **dedicated, licensed M365 service
+account** with write access to the `Canoe` library (rather than a person's account),
+so the pipeline doesn't break when someone changes roles. The only credentials the
+code itself holds are the Canoe API credentials in `.env` (entered via `setup.py`).
+
+---
+
 ## Repository layout
 
 ```
 canoe-docs/
 ├── install.sh                   # One-shot installer for a new machine
-├── setup.py                     # Credential wizard: local web form -> writes .env secrets
+├── setup.py                     # Credential wizard: terminal prompts -> writes .env secrets
 ├── run_weekly.sh                # What the scheduler runs each Monday (self-locating)
 ├── co.wakerobin.canoe.weekly.plist  # launchd job (reference; install.sh generates a per-machine copy)
 ├── requirements.txt
@@ -69,9 +84,11 @@ activity log are all gitignored.
 
 ### Prerequisites
 - **macOS** with **Python 3.9+** and **git**.
-- The **OneDrive client** signed in to Wake Robin, with the **Investment → `Canoe`
-  SharePoint library synced locally**. Right-click the folder → *Always keep on this
-  device* (so the archive is present for de-duplication rather than cloud-only).
+- The **OneDrive client** on the device, **signed in to a dedicated service account**
+  (recommended) with write access to the **Investment → `Canoe` SharePoint library**,
+  and that library **synced locally** (right-click → *Always keep on this device*, so
+  the archive is present for de-duplication rather than cloud-only). See
+  [How files reach SharePoint](#how-files-reach-sharepoint).
 - **Canoe API credentials** (client id/secret, and/or a service-account username/password).
 
 ### Steps
@@ -100,10 +117,9 @@ activity log are all gitignored.
    ```bash
    python setup.py
    ```
-   It starts a local page (localhost only — nothing is transmitted), you enter the
-   credentials in the form, and it writes them to `py files/.env` with owner-only
-   permissions, then shuts down. Provide the Client ID + Secret and/or the
-   service-account username + password.
+   It prompts in the terminal (secret fields are hidden as you type) and writes them
+   to `py files/.env` with owner-only permissions — nothing is transmitted. Provide
+   the Client ID + Secret and/or the service-account username + password.
 
    *Alternatively*, hand-edit `py files/.env` (gitignored):
    ```bash
