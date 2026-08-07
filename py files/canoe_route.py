@@ -34,7 +34,8 @@ import fitz  # PyMuPDF
 
 fitz.TOOLS.mupdf_display_errors(False)
 
-DEFAULT_DIR = "/Users/jasonbyrne/Library/CloudStorage/OneDrive-WakeRobin/Canoe/Private Fund Reporting"
+DEFAULT_DIR = os.environ.get("CANOE_ARCHIVE_DIR") or \
+    "/Users/jasonbyrne/Library/CloudStorage/OneDrive-SharedLibraries-WakeRobin/Investment - Documents/Canoe"
 SCOPE_SUBDIR = "Unknown Investment"   # where unmapped docs live
 
 PUBS = [

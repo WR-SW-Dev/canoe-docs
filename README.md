@@ -33,8 +33,9 @@ Canoe API/
 └── README.md
 ```
 
-The document archive itself lives **outside** this folder, at
-`Canoe/Private Fund Reporting/` — so it is never inside the Git repo.
+The document archive lives in the **team SharePoint library** (Investment site →
+`Canoe`), synced locally — set via the `CANOE_ARCHIVE_DIR` env var (default baked
+into `run_weekly.sh` and the scripts). It is never inside the Git repo.
 
 ---
 
@@ -74,9 +75,10 @@ Canoe's `GET /v1/documents` returns a **ZIP bundle** of files (paged, already
 foldered by manager). This tool pages through them, extracts, and sub-organizes.
 
 ```bash
-# Full pull of everything, organized Manager/Year/Category:
+# Full pull of everything, organized Manager/Year/Category.
+# --dest is the team SharePoint "Canoe" library synced locally (or set CANOE_ARCHIVE_DIR):
 ../.venv/bin/python canoe_bulk_download.py \
-    --dest "/Users/<you>/Library/CloudStorage/OneDrive-WakeRobin/Canoe/Private Fund Reporting" \
+    --dest "/Users/<you>/Library/CloudStorage/OneDrive-SharedLibraries-WakeRobin/Investment - Documents/Canoe" \
     --organize year-category
 
 # Weekly incremental — only documents uploaded since the last run:
@@ -114,7 +116,7 @@ Moves Merrill/BofA custodian statements to `Merrill/` (and, optionally, news to
 ## Archive structure
 
 ```
-Private Fund Reporting/
+Canoe/                                     # team SharePoint library (Investment site)
 ├── <Manager>/<Year>/<Canoe Category>/<file>.pdf
 ├── Merrill/<Year>/<Category>/...          # custodian statements (via canoe_route.py)
 └── Unknown Investment/...                 # docs Canoe couldn't map to a fund
@@ -131,9 +133,9 @@ remember — and because it's on an always-on Mac Mini, no laptop needs to be aw
 
 **Deploy on the Mac Mini:**
 1. Get the code there: `git clone <repo>` (or copy `Canoe API/`), then `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`.
-2. Make sure **OneDrive is installed and syncing** the `Private Fund Reporting` folder on the Mini.
+2. **Sync the team SharePoint `Canoe` library** (Investment site) on the Mini via the OneDrive client, then set `CANOE_ARCHIVE_DIR` to its local path (it may differ from this machine's, e.g. under `OneDrive-SharedLibraries-WakeRobin/Investment - Documents/Canoe`).
 3. Put the credentials in `py files/.env` (or Keychain) on the Mini.
-4. If the Mini's username/paths differ from this machine, update the absolute paths in `run_weekly.sh` and the `.plist`.
+4. If the Mini's username/paths differ, update the absolute paths in `run_weekly.sh` and the `.plist` (or rely on `CANOE_ARCHIVE_DIR`).
 5. Activate:
    ```bash
    cp co.wakerobin.canoe.weekly.plist ~/Library/LaunchAgents/

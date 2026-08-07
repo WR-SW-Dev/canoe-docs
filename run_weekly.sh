@@ -5,7 +5,9 @@
 BASE="/Users/jasonbyrne/Library/CloudStorage/OneDrive-WakeRobin/Canoe/Canoe API"
 PYDIR="$BASE/py files"
 VENV="$BASE/.venv/bin/python"
-DEST="/Users/jasonbyrne/Library/CloudStorage/OneDrive-WakeRobin/Canoe/Private Fund Reporting"
+# Archive destination. Defaults to the team SharePoint "Canoe" library synced locally.
+# On another machine (e.g. the Mac Mini), override by exporting CANOE_ARCHIVE_DIR.
+DEST="${CANOE_ARCHIVE_DIR:-/Users/jasonbyrne/Library/CloudStorage/OneDrive-SharedLibraries-WakeRobin/Investment - Documents/Canoe}"
 STATE="$PYDIR/.canoe_last_run.json"
 LOG="$BASE/logs/weekly.log"
 
