@@ -1,15 +1,19 @@
 #!/bin/zsh
-# Weekly incremental pull of new Canoe documents. Invoked by launchd (Mondays 7am ET).
+# Weekly incremental pull of new Canoe documents. Invoked by launchd (Mondays 7am).
 # Pulls only documents uploaded since the last successful run (tracked in the state file).
+#
+# Portable: locates itself, so it works from any clone location. The only per-machine
+# value is CANOE_ARCHIVE_DIR (the local path of the synced SharePoint "Canoe" folder),
+# which install.sh bakes into the launchd job's environment.
 
-BASE="/Users/jasonbyrne/Library/CloudStorage/OneDrive-WakeRobin/Canoe/Canoe API"
+BASE="${0:A:h}"                       # directory containing this script (the repo root)
 PYDIR="$BASE/py files"
 VENV="$BASE/.venv/bin/python"
-# Archive destination. Defaults to the team SharePoint "Canoe" library synced locally.
-# On another machine (e.g. the Mac Mini), override by exporting CANOE_ARCHIVE_DIR.
-DEST="${CANOE_ARCHIVE_DIR:-/Users/jasonbyrne/Library/CloudStorage/OneDrive-SharedLibraries-WakeRobin/Investment - Documents/Canoe}"
 STATE="$PYDIR/.canoe_last_run.json"
 LOG="$BASE/logs/weekly.log"
+
+: "${CANOE_ARCHIVE_DIR:?Set CANOE_ARCHIVE_DIR to the local path of the synced SharePoint 'Canoe' folder}"
+DEST="$CANOE_ARCHIVE_DIR"
 
 mkdir -p "$BASE/logs"
 cd "$PYDIR" || exit 1

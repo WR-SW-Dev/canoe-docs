@@ -11,6 +11,14 @@
         <string>/Users/jasonbyrne/Library/CloudStorage/OneDrive-WakeRobin/Canoe/Canoe API/run_weekly.sh</string>
     </array>
 
+    <!-- The local path of the synced SharePoint "Canoe" library on THIS machine.
+         install.sh generates a per-machine copy of this file with the right value. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>CANOE_ARCHIVE_DIR</key>
+        <string>/Users/jasonbyrne/Library/CloudStorage/OneDrive-SharedLibraries-WakeRobin/Investment - Documents/Canoe</string>
+    </dict>
+
     <!-- Every Monday at 07:00 local time. Weekday 1 = Monday. -->
     <key>StartCalendarInterval</key>
     <dict>
