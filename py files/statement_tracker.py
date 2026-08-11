@@ -853,8 +853,7 @@ def write_xlsx(path: str, recs: list[dict], dest: str) -> None:
                                if r["investment"] == inv and r["entity"]}, key=str.lower)
             name = ws.cell(i, 1, inv)
             name.border = thin
-            if entities:
-                name.font = Font(bold=True)
+            name.font = Font(bold=True)
             for j, p in enumerate(periods, start=2):
                 c = ws.cell(i, j)
                 c.border = thin
