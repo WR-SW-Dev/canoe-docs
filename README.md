@@ -68,6 +68,7 @@ canoe-docs/
 │   ├── canoe_bulk_download.py   # Downloader: full + weekly-incremental, foldered, deduped, logged
 │   ├── canoe_reclassify.py      # No-AI cleanup: resolve Undated/Unknown by reading text locally
 │   ├── canoe_route.py           # Route Merrill/BofA + news out to dedicated folders
+│   ├── statement_tracker.py     # Statement tracker: received/pending/overdue per fund per period
 │   └── canoe_downloader.py      # DEPRECATED — early version; superseded by canoe_bulk_download.py
 ├── Canoe Docs/                  # Canoe API reference (text + OpenAPI spec)
 ├── Claude Output/               # Architecture & proposal write-ups (HTML)
@@ -197,6 +198,66 @@ Canoe/                                     # team SharePoint library (Investment
 ```
 - **Year** comes from the document's data date (the period-end date in the filename), not the upload date. Undated docs sit under `Undated/`.
 - **Category** is Canoe's own document category (Financial Statements & Performance, Tax, Legal/Compliance, Investor Administration & Communication, Capital Activity).
+
+---
+
+## Statement tracker
+
+`statement_tracker.py` answers *"which managers have — and haven't — sent their
+statement for each period?"* It is **Architecture A** from the proposal packet:
+metadata-and-rules only. It reads Canoe's structured fields (fund, sponsor,
+data date, document type, validation status) via `GET /v1/documents/data` and
+**never opens a document body** — no Gen AI, nothing new to approve.
+
+The weekly job runs it automatically after each Monday pull. The primary view is
+a simple green/red workbook at the archive root; supporting detail sits in a
+subfolder:
+
+```
+Canoe/Statement Tracker.xlsx        # PRIMARY: green = received, red = not, one
+                                    # sheet per cadence (Monthly / Quarterly / Annual),
+                                    # one row per fund, one column per period
+Canoe/_statement_tracker/
+├── Statement Tracker.html          # detail dashboard: action-needed list + status grids
+├── statement_status.csv            # flat fund x period status table
+├── statement_received_log.csv      # every statement seen (data date, upload date, status)
+├── statement_schedule.csv          # EDITABLE config — the expected schedule
+└── statement_metadata_cache.json   # metadata cache (auto-managed)
+```
+
+**How a period is judged.** For each tracked fund, every monthly/quarterly/annual
+period from its `start_date` gets one status:
+
+| Status | Meaning |
+|---|---|
+| Received | A statement-type document with a data date in the period, uploaded by the due date |
+| Received late | Same, but it arrived after the due date |
+| Pending | Period has ended; still inside the grace window |
+| **OVERDUE** | No statement and the grace window has passed |
+| Review | Only flagged documents cover the period (Awaiting Confirmation / Anomaly / Potential Discrepancy) — Canoe's review flags never auto-confirm a period |
+
+The due date is period end + `grace_days` (defaults: monthly 45, quarterly 90,
+annual 180; December period-ends get +30 for audit-season lag).
+
+**The schedule is the source of truth — edit it.** `statement_schedule.csv` is
+auto-seeded on first run (frequency inferred from 12 months of history, with
+Canoe's own reporting-frequency field as a tie-breaker) and safe to edit: change
+`frequency`, `grace_days`, set `track=no` for wind-downs, or list `doc_types`
+overrides for funds whose "statement" arrives under a different label. Funds that
+appear in Canoe later are appended automatically with a `NEW` note.
+
+```bash
+# Manual run (same as the weekly job):
+../.venv/bin/python statement_tracker.py --dest "$CANOE_ARCHIVE_DIR"
+
+# Force a full metadata re-pull (picks up re-categorized documents):
+../.venv/bin/python statement_tracker.py --dest "$CANOE_ARCHIVE_DIR" --refresh full
+```
+
+By default only document types that actually evidence a statement satisfy a
+period (Account Statement, Capital Account Statement, Monthly/Quarterly/Annual
+Report, Financials); fact sheets, performance estimates and the like are logged
+but never mark a period received.
 
 ---
 

@@ -24,4 +24,9 @@ echo "===== weekly run: $(date) =====" >> "$LOG"
     --organize year-category \
     --since auto \
     --state "$STATE" >> "$LOG" 2>&1
-echo "exit code: $?" >> "$LOG"
+echo "download exit code: $?" >> "$LOG"
+
+# Refresh the statement tracker (metadata-only) after the document pull.
+echo "--- statement tracker: $(date) ---" >> "$LOG"
+"$VENV" statement_tracker.py --dest "$DEST" >> "$LOG" 2>&1
+echo "tracker exit code: $?" >> "$LOG"
