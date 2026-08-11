@@ -209,6 +209,16 @@ metadata-and-rules only. It reads Canoe's structured fields (fund, sponsor,
 data date, document type, validation status) via `GET /v1/documents/data` and
 **never opens a document body** — no Gen AI, nothing new to approve.
 
+It pulls by **document type across all Canoe categories** (Account Statement,
+Capital Account Statement, Monthly/Quarterly/Annual Report, Financials) — Canoe
+files the same "Account Statement" type under Capital Activity, Investment
+Reporting, *or* Financial Statements & Performance depending on the document,
+so a category-scoped pull silently misses real statements.
+
+In the grid, **green cells hyperlink to the statement file in the archive**
+(relative links, so they work on any machine syncing the library); a legend at
+the top of each sheet explains green / red / blank.
+
 The weekly job runs it automatically after each Monday pull. The team-facing
 grid is deliberately the **only file** in `_statement_tracker/`; everything
 supporting it lives in `backend/`:
@@ -224,8 +234,25 @@ Canoe/_statement_tracker/
     ├── Statement Tracker.html      # detail dashboard: action-needed list + 5-status grids
     ├── statement_status.csv        # flat fund x period status table
     ├── statement_received_log.csv  # every statement seen (data date, upload date, status)
+    ├── Statement Digest.html       # statements that arrived since the last run
     └── statement_metadata_cache.json  # metadata cache (auto-managed)
 ```
+
+**Email digest.** Each run builds `backend/Statement Digest.html` — the
+statements that arrived since the previous run (each document is announced
+exactly once). To have it emailed, add SMTP settings to `py files/.env`:
+
+```bash
+CANOE_DIGEST_TO=ops@wakerobin.co,jbyrne@wakerobin.co
+CANOE_SMTP_USER=service_account@wakerobin.co     # mailbox with SMTP AUTH enabled
+CANOE_SMTP_PASS=...
+# optional: CANOE_SMTP_HOST (default smtp.office365.com), CANOE_SMTP_PORT (587),
+#           CANOE_DIGEST_FROM (defaults to CANOE_SMTP_USER)
+```
+
+Unconfigured, the digest is still written to the backend folder — the run log
+notes that email is off. (M365: the mailbox needs *Authenticated SMTP* enabled
+in the admin center.)
 
 (Older layouts — the grid at the archive root, csv schedule, flat files — are
 migrated automatically on the first run of the new version.)

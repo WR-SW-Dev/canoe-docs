@@ -9,9 +9,11 @@ dependency and no new data-handling surface.
 
 How it works
 ------------
-1. Pull metadata for every document in the "Financial Statements & Performance"
-   category (full pull the first time, incremental by last-modified after that;
-   cached in a JSON file beside the outputs).
+1. Pull metadata for every statement-type document -- Account Statement,
+   Quarterly Report, Financials, etc. -- across ALL Canoe categories (Canoe
+   scatters these types over Capital Activity, Investment Reporting, and
+   Financial Statements & Performance). Full pull the first time, incremental
+   by last-modified after that; cached in a JSON file beside the outputs.
 2. Load -- or, on first run, auto-seed from history -- an editable schedule:
    one row per fund with its expected frequency (monthly/quarterly/annual) and
    a grace period in days after period end.
@@ -40,9 +42,12 @@ import html
 import json
 import os
 import re
+import smtplib
 import sys
 import time
+import urllib.parse
 from datetime import date, datetime, timedelta, timezone
+from email.mime.text import MIMEText
 
 import openpyxl
 import requests
@@ -52,21 +57,23 @@ from openpyxl.worksheet.datavalidation import DataValidation
 import canoe_auth
 
 DATA_URL = "https://api.canoesoftware.com/v1/documents/data"
-CATEGORY = "Financial Statements & Performance"
 PAGE_LIMIT = 100
 MAX_RETRIES = 5
 
-# Document types that count as "the statement arrived" for a period.
-# Everything else in the category (fact sheets, performance estimates,
-# exposure reports, ...) is informational and never satisfies a period.
-DEFAULT_STATEMENT_TYPES = {
-    "account statement",
-    "capital account statement",
-    "monthly report",
-    "quarterly report",
-    "annual report",
-    "financials",
-}
+# Document types that count as "the statement arrived" for a period. The pull
+# filters on document_type across ALL Canoe categories -- the same "Account
+# Statement" type shows up under Capital Activity, Investment Reporting, and
+# Financial Statements & Performance depending on the document, so filtering
+# by category silently drops real statements.
+DEFAULT_STATEMENT_TYPE_NAMES = [
+    "Account Statement",
+    "Capital Account Statement",
+    "Monthly Report",
+    "Quarterly Report",
+    "Annual Report",
+    "Financials",
+]
+DEFAULT_STATEMENT_TYPES = {t.lower() for t in DEFAULT_STATEMENT_TYPE_NAMES}
 
 # Canoe document statuses that must be looked at by a person before the
 # period they cover can be trusted.
@@ -91,7 +98,7 @@ GRID_FILE = "Statement Tracker.xlsx"
 def _fetch_page(page: int, extra: dict) -> requests.Response:
     # NB: do NOT pass `fields` here -- when it is supplied this endpoint returns
     # empty `allocations` (losing fund/data-date) and ignores page/limit.
-    params = {"page": page, "limit": PAGE_LIMIT, "category": CATEGORY, **extra}
+    params = {"page": page, "limit": PAGE_LIMIT, **extra}
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             resp = requests.get(DATA_URL, headers=canoe_auth.get_auth_headers(),
@@ -176,31 +183,39 @@ def _pull(extra: dict, label: str) -> list[dict]:
     return list(by_id.values())
 
 
-def load_metadata(cache_path: str, refresh: str) -> list[dict]:
-    """Return the slim doc list, from cache + incremental refresh (or full pull)."""
+def load_metadata(cache_path: str, refresh: str, type_names: list[str]) -> list[dict]:
+    """Return the slim doc list for the given document types (all categories),
+    from cache + incremental refresh (or full pull)."""
+    types_param = ",".join(sorted(type_names))
     cache = None
     if refresh != "full" and os.path.exists(cache_path):
         try:
             cache = json.load(open(cache_path))
         except (OSError, ValueError):
             cache = None
+    # A schedule edit can add doc_types the cache has never pulled -- re-pull.
+    if cache is not None and set(cache.get("types", [])) != set(t.lower() for t in type_names):
+        print("  document-type set changed -- full re-pull")
+        cache = None
 
     if cache is None:
         print("  full metadata pull (first run or --refresh full) -- this can take a while...")
-        docs = _pull({}, "full pull")
+        docs = _pull({"document_type": types_param}, "full pull")
         by_id = {d["id"]: d for d in docs if d.get("id")}
     else:
         by_id = {d["id"]: d for d in cache.get("docs", []) if d.get("id")}
         # Re-pull anything modified since just before the last run, so re-tags
         # (fund/date corrections done inside Canoe) are picked up too.
         since = (datetime.fromisoformat(cache["pulled_at"]) - timedelta(days=2)).strftime("%Y-%m-%d")
-        fresh = _pull({"last_modified_time_start": since}, f"delta since {since}")
+        fresh = _pull({"document_type": types_param,
+                       "last_modified_time_start": since}, f"delta since {since}")
         for d in fresh:
             if d.get("id"):
                 by_id[d["id"]] = d
         print(f"  cache: {len(by_id)} docs after merging {len(fresh)} modified")
 
     json.dump({"pulled_at": datetime.now(timezone.utc).isoformat(),
+               "types": sorted(t.lower() for t in type_names),
                "docs": list(by_id.values())}, open(cache_path, "w"))
     return list(by_id.values())
 
@@ -690,13 +705,53 @@ edit <code>{SCHEDULE_FILE}</code> to change frequencies, grace periods, or track
         f.write("\n".join(parts))
 
 
-def write_xlsx(path: str, recs: list[dict]) -> None:
+def _sanitize(component: str) -> str:
+    # Mirrors canoe_bulk_download._sanitize so fund names map to archive folders.
+    for ch in ("/", "\\", ":", "*", "?", '"', "<", ">", "|"):
+        component = component.replace(ch, "-")
+    return component.strip().strip(".") or "Unfiled"
+
+
+def build_archive_index(dest: str) -> dict[str, str]:
+    """Map lowercase file stem (dedup __N suffix stripped) -> archive relpath."""
+    index: dict[str, str] = {}
+    for root, dirs, files in os.walk(dest):
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d != SUBDIR]
+        for f in files:
+            if f.startswith(".") or f.startswith("~$"):
+                continue
+            base = re.sub(r"__\d+$", "", os.path.splitext(f)[0]).lower()
+            index.setdefault(base, os.path.relpath(os.path.join(root, f), dest))
+    return index
+
+
+def _file_link(rec: dict, index: dict[str, str], dest: str) -> str | None:
+    """Relative hyperlink (from the workbook's folder) to the statement file,
+    falling back to the fund's archive folder."""
+    rel = index.get((rec.get("doc_name") or "").lower())
+    if rel is None:
+        folder = _sanitize(rec["investment"])
+        if os.path.isdir(os.path.join(dest, folder)):
+            rel = folder
+        else:
+            return None
+    return "../" + urllib.parse.quote(rel.replace(os.sep, "/"))
+
+
+def write_xlsx(path: str, recs: list[dict], dest: str) -> None:
     """Simple received grid: one sheet per cadence, one row per fund, one column
-    per period. Green = a statement for that period is in Canoe, red = not."""
+    per period. Green = a statement for that period is in Canoe (click to open
+    it), red = expected but not received, blank = not tracked for that period."""
     green = PatternFill("solid", fgColor="63BE7B")
     red = PatternFill("solid", fgColor="F8696B")
     thin = Border(*[Side(style="thin", color="D9D9D9")] * 4)
     center = Alignment(horizontal="center")
+    index = build_archive_index(dest)
+
+    LEGEND = [(green, "= Received (click the cell to open the statement)"),
+              (red, "= Expected, not received in Canoe"),
+              (None, "= Not tracked for this period")]
+    HDR_ROW = len(LEGEND) + 2          # legend, blank row, then the header row
 
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
@@ -707,32 +762,119 @@ def write_xlsx(path: str, recs: list[dict]) -> None:
             continue
         ws = wb.create_sheet(sheet_name)
         periods = sorted({r["period"] for r in rs}, key=period_end)
-        funds = sorted({(r["investment"], r["fund_sponsor"]) for r in rs},
-                       key=lambda t: t[0].lower())
-        received = {(r["investment"], r["period"]): int(r["n_docs"] or 0) > 0 for r in rs}
+        funds = sorted({r["investment"] for r in rs}, key=str.lower)
+        cell_rec = {(r["investment"], r["period"]): r for r in rs}
 
-        ws.cell(1, 1, "Fund").font = Font(bold=True)
-        ws.cell(1, 2, "Manager").font = Font(bold=True)
-        for j, p in enumerate(periods, start=3):
-            c = ws.cell(1, j, period_label(p))
+        for i, (fill, label) in enumerate(LEGEND, start=1):
+            sw = ws.cell(i, 2)
+            sw.border = thin
+            if fill:
+                sw.fill = fill
+            ws.cell(i, 3, label)
+
+        ws.cell(HDR_ROW, 1, "Fund").font = Font(bold=True)
+        for j, p in enumerate(periods, start=2):
+            c = ws.cell(HDR_ROW, j, period_label(p))
             c.font = Font(bold=True)
             c.alignment = center
-        for i, (inv, sponsor) in enumerate(funds, start=2):
+        for i, inv in enumerate(funds, start=HDR_ROW + 1):
             ws.cell(i, 1, inv).border = thin
-            ws.cell(i, 2, sponsor).border = thin
-            for j, p in enumerate(periods, start=3):
+            for j, p in enumerate(periods, start=2):
                 c = ws.cell(i, j)
                 c.border = thin
-                if (inv, p) in received:
-                    c.fill = green if received[(inv, p)] else red
+                rec = cell_rec.get((inv, p))
+                if rec is None:
+                    continue
+                if int(rec["n_docs"] or 0) > 0:
+                    c.fill = green
+                    link = _file_link(rec, index, dest)
+                    if link:
+                        c.hyperlink = link
+                else:
+                    c.fill = red
 
         ws.column_dimensions["A"].width = 42
-        ws.column_dimensions["B"].width = 24
-        for j in range(3, 3 + len(periods)):
+        for j in range(2, 2 + len(periods)):
             ws.column_dimensions[openpyxl.utils.get_column_letter(j)].width = 10
-        ws.freeze_panes = "C2"
+        ws.freeze_panes = f"B{HDR_ROW + 1}"
 
     wb.save(path)
+
+
+# --------------------------------------------------------------------------- #
+# Digest: statements that arrived since the last run
+# --------------------------------------------------------------------------- #
+
+DIGEST_STATE = "digest_state.json"
+
+def build_digest(backend: str, rows: list[dict], recs: list[dict]) -> tuple[str, list[dict]]:
+    """Return (digest_html, new_rows). Tracks reported doc ids in a state file
+    so each statement is announced exactly once, whatever the run cadence."""
+    state_path = os.path.join(backend, DIGEST_STATE)
+    seen: set = set()
+    first_run = not os.path.exists(state_path)
+    if not first_run:
+        try:
+            seen = set(json.load(open(state_path)).get("reported_ids", []))
+        except (OSError, ValueError):
+            first_run = True
+    if first_run:
+        # Baseline: don't announce years of history -- only the last 7 days.
+        cutoff = date.today() - timedelta(days=7)
+        new = [r for r in rows if r["uploaded"] and r["uploaded"] >= cutoff]
+    else:
+        new = [r for r in rows if r["doc_id"] and r["doc_id"] not in seen]
+    new.sort(key=lambda r: (r["investment"].lower(), r["data_date"] or date.min))
+
+    seen.update(r["doc_id"] for r in rows if r["doc_id"])
+    json.dump({"updated": datetime.now(timezone.utc).isoformat(),
+               "reported_ids": sorted(seen)}, open(state_path, "w"))
+
+    n_over = sum(1 for r in recs if r["status"] == "overdue")
+    esc = html.escape
+    body = [f"""<meta charset="utf-8">
+<style> body {{ font: 14px -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; color: #24292f; }}
+ table {{ border-collapse: collapse; }} th, td {{ border: 1px solid #d8dee4; padding: 4px 10px; text-align: left; }}
+ th {{ background: #f6f8fa; }} </style>
+<h2>Canoe statements digest &mdash; {esc(date.today().isoformat())}</h2>
+<p><b>{len(new)}</b> new statement(s) since the last pull &middot; {n_over} period(s) currently overdue.
+See the <i>Statement Tracker.xlsx</i> grid in the Canoe SharePoint library for the full picture.</p>"""]
+    if new:
+        body.append("<table><tr><th>Fund</th><th>Type</th><th>Period date</th><th>Uploaded</th></tr>")
+        for r in new:
+            body.append(f"<tr><td>{esc(r['investment'])}</td><td>{esc(r['document_type'])}</td>"
+                        f"<td>{esc(r['data_date'].isoformat() if r['data_date'] else 'undated')}</td>"
+                        f"<td>{esc(r['uploaded'].isoformat() if r['uploaded'] else '')}</td></tr>")
+        body.append("</table>")
+    else:
+        body.append("<p>No new statements this run.</p>")
+    return "\n".join(body), new
+
+
+def email_digest(digest_html: str, n_new: int) -> str:
+    """Send the digest if SMTP settings are present in the environment/.env.
+    Returns a short status string for the run log."""
+    to = os.environ.get("CANOE_DIGEST_TO", "").strip()
+    user = os.environ.get("CANOE_SMTP_USER", "").strip()
+    password = os.environ.get("CANOE_SMTP_PASS", "").strip()
+    if not (to and user and password):
+        return "email not configured (set CANOE_DIGEST_TO / CANOE_SMTP_USER / CANOE_SMTP_PASS)"
+    host = os.environ.get("CANOE_SMTP_HOST", "smtp.office365.com").strip()
+    port = int(os.environ.get("CANOE_SMTP_PORT", "587"))
+    sender = os.environ.get("CANOE_DIGEST_FROM", user).strip()
+
+    msg = MIMEText(digest_html, "html")
+    msg["Subject"] = f"Canoe statements digest -- {n_new} new ({date.today().isoformat()})"
+    msg["From"] = sender
+    msg["To"] = to
+    try:
+        with smtplib.SMTP(host, port, timeout=60) as s:
+            s.starttls()
+            s.login(user, password)
+            s.sendmail(sender, [a.strip() for a in to.split(",") if a.strip()], msg.as_string())
+        return f"emailed to {to}"
+    except Exception as exc:                                  # noqa: BLE001
+        return f"email FAILED ({exc.__class__.__name__}: {exc})"
 
 
 # --------------------------------------------------------------------------- #
@@ -791,26 +933,32 @@ def main() -> None:
     print(f"  backend     : {backend}")
     migrate_layout(dest, outdir, backend)
 
-    docs = load_metadata(os.path.join(backend, CACHE_FILE), args.refresh)
-    print(f"  documents   : {len(docs)} in category '{CATEGORY}'")
-
+    # The schedule is read first: per-fund doc_types overrides extend which
+    # document types the metadata pull must cover.
     sched_path = os.path.join(backend, SCHEDULE_FILE)
-    # Build rows twice-cheaply: first with defaults to seed/sync the schedule,
-    # then honoring any per-fund doc_types overrides from the schedule.
+    sched = load_schedule(sched_path) if os.path.exists(sched_path) else None
+    overrides: dict = {}
+    type_names = list(DEFAULT_STATEMENT_TYPE_NAMES)
+    known = {t.lower() for t in type_names}
+    for s in sched or []:
+        types = [t.strip() for t in (s.get("doc_types") or "").split(";") if t.strip()]
+        if types:
+            overrides[s["investment"]] = {t.lower() for t in types}
+            for t in types:
+                if t.lower() not in known:
+                    known.add(t.lower())
+                    type_names.append(t)
+
+    docs = load_metadata(os.path.join(backend, CACHE_FILE), args.refresh, type_names)
+    print(f"  documents   : {len(docs)} across {len(type_names)} statement types (all categories)")
+
     base_rows = statement_rows(docs, {})
-    if os.path.exists(sched_path):
-        sched = load_schedule(sched_path)
-        sched = sync_new_funds(sched, base_rows, sched_path)
-    else:
+    if sched is None:
         print("  no schedule found -- seeding from history "
               f"(review and edit {SCHEDULE_FILE}!)")
         sched = seed_schedule(base_rows, sched_path)
-
-    overrides = {}
-    for s in sched:
-        types = [t.strip().lower() for t in (s.get("doc_types") or "").split(";") if t.strip()]
-        if types:
-            overrides[s["investment"]] = set(types)
+    else:
+        sched = sync_new_funds(sched, base_rows, sched_path)
     rows = statement_rows(docs, overrides) if overrides else base_rows
     print(f"  statements  : {len(rows)} fund-allocation rows "
           f"across {len({r['investment'] for r in rows})} funds")
@@ -830,8 +978,13 @@ def main() -> None:
     write_received_log(os.path.join(backend, "statement_received_log.csv"), rows)
     write_html(os.path.join(backend, "Statement Tracker.html"), recs, undated, args.periods, generated)
     # The grid is the team's view -- the only file directly in _statement_tracker/.
-    write_xlsx(os.path.join(outdir, GRID_FILE), recs)
+    write_xlsx(os.path.join(outdir, GRID_FILE), recs, dest)
     print(f"  wrote       : {GRID_FILE} + backend detail (html, csvs)")
+
+    digest_html, new_rows = build_digest(backend, rows, recs)
+    with open(os.path.join(backend, "Statement Digest.html"), "w") as f:
+        f.write(digest_html)
+    print(f"  digest      : {len(new_rows)} new statement(s); {email_digest(digest_html, len(new_rows))}")
 
 
 if __name__ == "__main__":
