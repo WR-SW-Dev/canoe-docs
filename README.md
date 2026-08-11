@@ -1,54 +1,146 @@
-# Canoe Document Automation
+# Canoe → SharePoint Sync
 
-Pulls documents from **Canoe Intelligence** via its API and keeps a clean, foldered
-archive in the team's **SharePoint** library. Designed to run unattended on an
-always-on Mac (a Mac Mini), once a week, entirely inside the licensed Microsoft
-environment — the documents never pass through a third-party cloud.
+A scheduled service that pulls documents from **Canoe Intelligence** and uploads them
+directly into a **SharePoint** document library through the **Microsoft Graph API**.
+It runs unattended on an always-on Mac (the Mac Studio App Server), once a week.
 
-> **Data & compliance — read first.** The documents are LP account statements,
-> K-1s, and portfolio detail: restricted financial data under Wake Robin's Gen AI /
-> data policy. This tooling only **downloads and files** them — no AI reads their
-> contents. Never commit documents or credentials to Git (the `.gitignore` enforces
-> this). Any future step that sends document *contents* to an AI model requires IT
-> Lead/CTO sign-off and must stay in-tenant (see [Roadmap](#roadmap)).
+There is **no OneDrive desktop-sync** involved: the application authenticates to
+Microsoft Graph as an **application** (not a user) using a **certificate**, and writes
+files straight into the library. The only account context is the Entra ID app
+registration, which is scoped so it can write only to the one Canoe SharePoint site.
 
----
-
-## How it runs
-
-Once installed on an always-on Mac, a `launchd` job fires **every Monday at 7:00 AM**:
-
-```
-Canoe API  ──GET /v1/documents (ZIP, only docs uploaded since last run)──▶  run_weekly.sh
-      │                                                                          │
-      │                                                        canoe_bulk_download.py
-      ▼                                                                          ▼
-  new documents ───────────────▶  synced SharePoint "Canoe" library  ──OneDrive──▶  team
-                                   (Manager / Year / Category)
-      │                                                                          │
-      └──▶ _download_activity.csv (per-file, in SharePoint)      run_history.csv (timestamps, in repo)
-```
-
-- Only **new** documents are fetched each week (tracked via a last-run marker), so runs are quick.
-- Files are placed by fund, then year, then Canoe document category, and de-duplicated by content.
-- Two logs are written: a per-file activity log next to the archive, and a git-safe run history (timestamps + counts, no file names). See [Logs](#logs).
-
-No laptop needs to be awake — the Mac Mini handles it.
+> **Data note.** The documents are LP account statements, K-1s, and portfolio detail.
+> This application only moves them from Canoe into SharePoint. No document content is
+> read or sent to any AI service. No credential is stored in this repository.
 
 ---
 
-## How files reach SharePoint
+## What it does, each run
 
-The code has **no SharePoint credentials and makes no SharePoint API calls.** It
-writes documents to a local folder (`CANOE_ARCHIVE_DIR`); the **OneDrive desktop
-client** syncs that folder to SharePoint, authenticated by the account signed into
-OneDrive on the device. SharePoint write access is therefore governed entirely by
-that signed-in account — nothing in this repo.
+1. **Discover** documents from Canoe metadata (`GET /v1/documents/data`), incrementally
+   since the last successful run (a full pass on the very first run).
+2. For every document **not already recorded** in the local manifest (keyed on the
+   Canoe document id): **download** its bytes (`GET /v1/documents/{id}`) and **upload**
+   them to SharePoint under `‹root›/‹Fund›/‹Year›/‹Category›/‹name›.pdf`, then record it
+   in the manifest.
+3. Write a **dated log** of documents fetched, skipped, uploaded, and any errors (each
+   error tagged with the document id), and **exit non-zero if any document failed**.
 
-**Recommended:** sign the device's OneDrive into a **dedicated, licensed M365 service
-account** with write access to the `Canoe` library (rather than a person's account),
-so the pipeline doesn't break when someone changes roles. The only credentials the
-code itself holds are the Canoe API credentials in `.env` (entered via `setup.py`).
+**Idempotent:** a rerun on the same day skips everything already in the manifest and
+uploads with *replace* semantics, so it never duplicates a document in the library.
+Distinct documents that happen to share a name are disambiguated (`… (2).pdf`).
+
+- **Fund / Year / Category** come from Canoe's authoritative metadata (the allocation's
+  fund and `data_date`, and Canoe's document category) — not from parsing filenames.
+- **Large files** (> 4 MB) upload via a Graph **upload session** (chunked); smaller
+  files use a simple PUT. On HTTP **429 / 503** the client honours `Retry-After` and
+  backs off.
+
+There is deliberately **no email or Teams notification** in this application.
+
+---
+
+## Configuration
+
+Every value is read from the **environment**. On the App Server the values are stored
+in the **macOS Keychain** by `setup.py` and exported into the environment by
+`run_sync.sh` at run time — you do **not** keep a `.env` file on the server.
+`.env.example` in the repo lists every key with empty values for reference.
+
+| Key | What it is | Where its value comes from |
+|---|---|---|
+| `GRAPH_TENANT_ID` | Entra ID (Azure AD) tenant id | Entra admin center → the tenant |
+| `GRAPH_CLIENT_ID` | App registration (client) id | the app registration |
+| `GRAPH_CERT_THUMBPRINT` | Certificate thumbprint | the certificate uploaded to the app registration |
+| `GRAPH_CERT_KEY_PATH` | Absolute path to the cert **private key** (PEM) | the key file placed on the App Server (outside the repo) |
+| `SP_HOSTNAME` | SharePoint host | e.g. `wakerobinco.sharepoint.com` |
+| `SP_SITE_PATH` | Server-relative site path | e.g. `/sites/Investment` |
+| `SP_LIBRARY` | Document library (drive) name | e.g. `Documents` |
+| `SP_ROOT_FOLDER` | Folder within the library to write under | e.g. `Canoe` |
+| `CANOE_CLIENT_ID` / `CANOE_CLIENT_SECRET` | Canoe API service-client credentials | Canoe → Settings → API Configuration |
+| `CANOE_USERNAME` / `CANOE_PASSWORD` | Canoe fallback (password-grant) auth | Canoe service account (optional) |
+| `CANOE_ORGANIZATION_ID` | Canoe org id | only if the login has multiple orgs (optional) |
+| `CANOE_MANIFEST_PATH` | Manifest location | optional; default `‹repo›/.state/manifest.json` |
+| `CANOE_LOG_DIR` | Log directory | optional; default `‹repo›/logs` |
+
+The certificate **private key itself is a file on the App Server**, not a config value —
+only its path is configured. Keep it `chmod 600` and outside the repo.
+
+---
+
+## Install on a fresh machine
+
+### Prerequisites
+- **macOS** with **Python 3.9+** and **git**.
+- An **Entra ID app registration** (provisioned by IT) with:
+  - a **certificate** credential,
+  - the **`Sites.Selected`** application permission, **granted write access to the one
+    Canoe SharePoint site** (so the app can write only there),
+  - the certificate's **private key** file copied onto the App Server.
+- The **Canoe API** service-client credentials.
+
+### Steps
+1. **Clone the repo:**
+   ```bash
+   git clone git@github.com:WR-SW-Dev/canoe-docs.git && cd canoe-docs
+   ```
+2. **Place the certificate private key** on the machine (e.g. `~/secrets/canoe-graph.pem`),
+   readable only by this user (`chmod 600`). Note its absolute path.
+3. **Run the installer** (creates the virtualenv, installs dependencies, generates the
+   weekly launchd job for this machine):
+   ```bash
+   ./install.sh
+   ```
+4. **Configure credentials** — prompts in the terminal, writes to the **Keychain**, and
+   **validates Graph access** with one harmless call (so a bad setup fails now, not
+   next Monday):
+   ```bash
+   python setup.py
+   ```
+5. **Verify Canoe auth:**
+   ```bash
+   cd "py files" && ../.venv/bin/python credentials_check.py
+   ```
+6. **Schedule the weekly sync:**
+   ```bash
+   launchctl load -w ~/Library/LaunchAgents/co.wakerobin.canoe.sync.plist
+   ```
+   Run it once now to confirm (optional):
+   ```bash
+   launchctl start co.wakerobin.canoe.sync && tail -30 logs/run_sync.log
+   ```
+
+---
+
+## The weekly schedule
+
+`install.sh` writes a `launchd` job at
+`~/Library/LaunchAgents/co.wakerobin.canoe.sync.plist` that runs **`run_sync.sh` every
+Monday at 07:00 local time**. `run_sync.sh` reads the configuration from the Keychain,
+exports it to the environment, and runs `canoe_sync.py`.
+
+- Disable:  `launchctl unload ~/Library/LaunchAgents/co.wakerobin.canoe.sync.plist`
+- Run now:  `launchctl start co.wakerobin.canoe.sync`
+- The job fires only while the Mac is on/awake; if asleep at 07:00 it runs at next wake.
+  Keep the App Server powered on.
+
+> Keychain access from a scheduled job requires the App Server user's login session to
+> be active (the login keychain unlocked). On an always-logged-in App Server this is the
+> normal state.
+
+---
+
+## Logs and state
+
+- **Per-run log:** `logs/canoe_sync_YYYY-MM-DD.log` — documents fetched / skipped /
+  uploaded, and any errors with the document id. This is the file to read after a run.
+- **Wrapper log:** `logs/run_sync.log` — start/finish and exit code of each scheduled run.
+- **launchd stdout/stderr:** `logs/launchd.out.log`, `logs/launchd.err.log`.
+- **Manifest:** `.state/manifest.json` — the idempotency record (Canoe doc id →
+  uploaded path). Local to the machine; not committed.
+
+A non-zero exit code from `canoe_sync.py` means at least one document failed — the log
+names each failure with its document id.
 
 ---
 
@@ -56,291 +148,33 @@ code itself holds are the Canoe API credentials in `.env` (entered via `setup.py
 
 ```
 canoe-docs/
-├── install.sh                   # One-shot installer for a new machine
-├── setup.py                     # Credential wizard: terminal prompts -> writes .env secrets
-├── run_weekly.sh                # What the scheduler runs each Monday (self-locating)
-├── co.wakerobin.canoe.weekly.plist  # launchd job (reference; install.sh generates a per-machine copy)
+├── install.sh                # Installer: venv + deps + launchd job
+├── setup.py                  # Credential wizard: prompts -> Keychain, validates Graph
+├── run_sync.sh               # What the scheduler runs weekly (Keychain -> env -> canoe_sync)
+├── .env.example              # Every config key, empty (reference only)
 ├── requirements.txt
-├── run_history.csv              # Run audit trail: timestamps + counts, NO file names
-├── py files/
-│   ├── canoe_auth.py            # OAuth (client-credentials, with password-grant fallback)
-│   ├── credentials_check.py     # Verify credentials — fetches a token, downloads nothing
-│   ├── canoe_bulk_download.py   # Downloader: full + weekly-incremental, foldered, deduped, logged
-│   ├── canoe_reclassify.py      # No-AI cleanup: resolve Undated/Unknown by reading text locally
-│   ├── canoe_route.py           # Route Merrill/BofA + news out to dedicated folders
-│   ├── statement_tracker.py     # Statement tracker: received/pending/overdue per fund per period
-│   └── canoe_downloader.py      # DEPRECATED — early version; superseded by canoe_bulk_download.py
-├── Canoe Docs/                  # Canoe API reference (text + OpenAPI spec)
-├── Claude Output/               # Architecture & proposal write-ups (HTML)
-└── README.md
+└── py files/
+    ├── canoe_sync.py         # The sync pipeline (discover -> download -> upload -> manifest)
+    ├── graph_client.py       # Microsoft Graph client: MSAL cert auth + chunked upload + backoff
+    ├── config.py             # Reads all configuration from the environment
+    ├── manifest.py           # Idempotency record, keyed on the Canoe document id
+    ├── canoe_auth.py         # Canoe API OAuth (client-credentials / password fallback)
+    └── credentials_check.py  # Verify Canoe auth (fetches a token, downloads nothing)
 ```
 
-The **document archive is not in this repo** — it lives in the SharePoint `Canoe`
-library, synced locally. Credentials, the virtualenv, logs, and the per-file
-activity log are all gitignored.
+Other scripts in `py files/` (`statement_tracker.py`, `canoe_reclassify.py`,
+`canoe_route.py`, `canoe_bulk_download.py`) are separate utilities from earlier phases;
+they are not part of the scheduled Graph sync described here.
 
 ---
 
-## Install on a new machine
-
-### Prerequisites
-- **macOS** with **Python 3.9+** and **git**.
-- The **OneDrive client** on the device, **signed in to a dedicated service account**
-  (recommended) with write access to the **Investment → `Canoe` SharePoint library**,
-  and that library **synced locally** (right-click → *Always keep on this device*, so
-  the archive is present for de-duplication rather than cloud-only). See
-  [How files reach SharePoint](#how-files-reach-sharepoint).
-- **Canoe API credentials** (client id/secret, and/or a service-account username/password).
-
-### Steps
-
-1. **Clone the repo:**
-   ```bash
-   git clone git@github.com:WR-SW-Dev/canoe-docs.git && cd canoe-docs
-   ```
-
-2. **Find the local path of the synced `Canoe` library** and set it as an env var.
-   To locate it:
-   ```bash
-   ls ~/Library/CloudStorage/*/Investment*/ 2>/dev/null
-   ```
-   Then (adjust to what you see — the exact path can vary per machine):
-   ```bash
-   export CANOE_ARCHIVE_DIR="$HOME/Library/CloudStorage/OneDrive-SharedLibraries-WakeRobin/Investment - Documents/Canoe"
-   ```
-
-3. **Run the installer** (creates the virtualenv, installs dependencies, generates the weekly launchd job for this machine):
-   ```bash
-   ./install.sh
-   ```
-
-4. **Add Canoe credentials** using the guided wizard:
-   ```bash
-   python setup.py
-   ```
-   It prompts in the terminal (secret fields are hidden as you type) and writes them
-   to `py files/.env` with owner-only permissions — nothing is transmitted. Provide
-   the Client ID + Secret and/or the service-account username + password.
-
-   *Alternatively*, hand-edit `py files/.env` (gitignored):
-   ```bash
-   CANOE_CLIENT_ID=...
-   CANOE_CLIENT_SECRET=...
-   CANOE_USERNAME=service_account_email        # optional fallback auth
-   CANOE_PASSWORD=service_account_password     # optional fallback auth
-   # CANOE_ORGANIZATION_ID=only_if_multiple_orgs
-   ```
-
-   > **Receiving the credentials:** have them sent to whoever deploys this over a
-   > secure channel (encrypted email, or better, a password manager / one-time secret
-   > link) and entered directly into the setup form. They should never be pasted into
-   > chat or code, or committed to Git.
-
-5. **Verify credentials:**
-   ```bash
-   cd "py files" && ../.venv/bin/python credentials_check.py
-   ```
-   Expect a token preview and `Credentials are valid`.
-
-6. **Schedule the weekly job:**
-   ```bash
-   launchctl load -w ~/Library/LaunchAgents/co.wakerobin.canoe.weekly.plist
-   ```
-   Optional — run it once now and watch the log:
-   ```bash
-   launchctl start co.wakerobin.canoe.weekly && tail -20 logs/weekly.log
-   ```
-
-> **The archive is not re-downloaded.** Because the ~9,000-doc archive already lives
-> in SharePoint (and syncs down via OneDrive), the tool only ever pulls *new*
-> documents and de-duplicates against what's there. The first run simply catches up
-> the last several days.
-
-To disable later: `launchctl unload ~/Library/LaunchAgents/co.wakerobin.canoe.weekly.plist`.
-The job only fires while the Mac is on/awake; if asleep at 7 AM it runs at next wake —
-keep the Mini powered on.
-
----
-
-## Manual usage
-
-All commands run from `py files/` using the project venv.
+## Manual operation
 
 ```bash
-# One-off incremental pull (same as the weekly job):
-../.venv/bin/python canoe_bulk_download.py --dest "$CANOE_ARCHIVE_DIR" \
-    --organize year-category --since auto --state "./.canoe_last_run.json"
-
-# Full re-pull of everything (rarely needed — the archive already exists):
-../.venv/bin/python canoe_bulk_download.py --dest "$CANOE_ARCHIVE_DIR" --organize year-category
-
-# Resolve Undated/Unknown docs by reading text locally (no AI). Dry-run first:
-../.venv/bin/python canoe_reclassify.py            # writes _reclassify_review.csv
-../.venv/bin/python canoe_reclassify.py --apply    # applies high-confidence moves (+ undo log)
-
-# Route Merrill/BofA custodian statements to a Merrill/ folder:
-# --scope all also sweeps fund folders (statement categories only) -- custodian
-# statements Canoe mapped to a fund move to Merrill/ too. The weekly job runs this.
-../.venv/bin/python canoe_route.py --rules merrill --scope all --apply
+cd "py files"
+../.venv/bin/python canoe_sync.py --dry-run   # discover + report, upload nothing
+../.venv/bin/python canoe_sync.py             # incremental sync (same as the weekly job)
+../.venv/bin/python canoe_sync.py --full      # reconsider all documents (skips those in the manifest)
 ```
-
-Placement is **content-aware** (keyed by each file's CRC): distinct files that share
-a name get `__2`/`__3` suffixes so none is lost; identical duplicates are collapsed;
-files already on disk are left in place. Every download tool is safe to re-run.
-
----
-
-## Archive structure
-
-```
-Canoe/                                     # team SharePoint library (Investment site)
-├── <Manager>/<Year>/<Canoe Category>/<file>.pdf
-├── Merrill/<Year>/<Category>/...          # custodian statements (via canoe_route.py)
-└── Unknown Investment/...                 # docs Canoe couldn't map to a fund
-```
-- **Year** comes from the document's data date (the period-end date in the filename), not the upload date. Undated docs sit under `Undated/`.
-- **Category** is Canoe's own document category (Financial Statements & Performance, Tax, Legal/Compliance, Investor Administration & Communication, Capital Activity).
-
----
-
-## Statement tracker
-
-`statement_tracker.py` answers *"which managers have — and haven't — sent their
-statement for each period?"* It is **Architecture A** from the proposal packet:
-metadata-and-rules only. It reads Canoe's structured fields (fund, sponsor,
-data date, document type, validation status) via `GET /v1/documents/data` and
-**never opens a document body** — no Gen AI, nothing new to approve.
-
-It pulls by **document type across all Canoe categories** (Account Statement,
-Capital Account Statement, Monthly/Quarterly/Annual Report, Financials) — Canoe
-files the same "Account Statement" type under Capital Activity, Investment
-Reporting, *or* Financial Statements & Performance depending on the document,
-so a category-scoped pull silently misses real statements.
-
-In the grid, **green cells hyperlink to the statement file in the archive**
-(relative links, so they work on any machine syncing the library); a legend at
-the top of each sheet explains green / red / blank.
-
-The weekly job runs it automatically after each Monday pull. The team-facing
-grid is the only workbook at the top of `_statement_tracker/`; everything
-supporting it lives in `backend/`, and prior runs in `Archive/`:
-
-```
-Canoe/_statement_tracker/
-├── Statement Tracker <date>.xlsx   # THE grid: green = received (click "Link"),
-│                                   # red = not; one sheet per cadence, one row
-│                                   # per fund (+ entity sub-rows), one column
-│                                   # per period. A NEW dated file each run.
-├── Archive/                        # prior runs, kept for records
-└── backend/
-    ├── statement_schedule.xlsx     # EDITABLE config — the expected schedule
-    │                               # (dropdowns for frequency/track; "How to use" tab)
-    ├── Statement Tracker.html      # detail dashboard: action-needed list + 5-status grids
-    ├── statement_status.csv        # flat fund x period status table
-    ├── statement_received_log.csv  # every statement seen (data date, upload date, status)
-    ├── Statement Digest.html       # statements that arrived since the last run
-    └── statement_metadata_cache.json  # metadata cache (auto-managed)
-```
-
-**Why a new dated file each run:** rewriting one workbook in place wedges
-OneDrive's Office-file sync whenever someone has it open in Excel — the update
-then silently never reaches SharePoint. A fresh file is a fresh OneDrive item,
-so the weekly refresh always lands; older runs are swept into `Archive/`.
-(The "Link" cells in archived copies point one folder level off and won't
-resolve — archives keep the color record; use the current file for links.)
-
-**Email digest.** Each run builds `backend/Statement Digest.html` — the
-statements that arrived since the previous run (each document is announced
-exactly once). To have it emailed, run `python setup.py` (safe to re-run —
-existing values are kept when you press Enter) and fill in the digest prompts,
-or add the SMTP settings to `py files/.env` by hand:
-
-```bash
-CANOE_DIGEST_TO=ops@wakerobin.co,jbyrne@wakerobin.co
-CANOE_SMTP_USER=service_account@wakerobin.co     # mailbox with SMTP AUTH enabled
-CANOE_SMTP_PASS=...
-# optional: CANOE_SMTP_HOST (default smtp.office365.com), CANOE_SMTP_PORT (587),
-#           CANOE_DIGEST_FROM (defaults to CANOE_SMTP_USER)
-```
-
-Unconfigured, the digest is still written to the backend folder — the run log
-notes that email is off. (M365: the mailbox needs *Authenticated SMTP* enabled
-in the admin center.)
-
-(Older layouts — the grid at the archive root, csv schedule, flat files — are
-migrated automatically on the first run of the new version.)
-
-**How a period is judged.** For each tracked fund, every monthly/quarterly/annual
-period from its `start_date` gets one status:
-
-| Status | Meaning |
-|---|---|
-| Received | A statement-type document with a data date in the period, uploaded by the due date |
-| Received late | Same, but it arrived after the due date |
-| Pending | Period has ended; still inside the grace window |
-| **OVERDUE** | No statement and the grace window has passed |
-| Review | Only flagged documents cover the period (Awaiting Confirmation / Anomaly / Potential Discrepancy) — Canoe's review flags never auto-confirm a period |
-
-The due date is period end + `grace_days` (defaults: monthly 45, quarterly 90,
-annual 180; December period-ends get +30 for audit-season lag).
-
-**The schedule is the source of truth — edit it.** `backend/statement_schedule.xlsx`
-is auto-seeded on first run (frequency inferred from 12 months of history, with
-Canoe's own reporting-frequency field as a tie-breaker) and safe to edit in Excel:
-change `frequency`, `grace_days`, set `track=no` for wind-downs, or list `doc_types`
-overrides for funds whose "statement" arrives under a different label. Funds that
-appear in Canoe later are appended automatically with a `NEW` note.
-
-```bash
-# Manual run (same as the weekly job):
-../.venv/bin/python statement_tracker.py --dest "$CANOE_ARCHIVE_DIR"
-
-# Force a full metadata re-pull (picks up re-categorized documents):
-../.venv/bin/python statement_tracker.py --dest "$CANOE_ARCHIVE_DIR" --refresh full
-```
-
-By default only document types that actually evidence a statement satisfy a
-period (Account Statement, Capital Account Statement, Monthly/Quarterly/Annual
-Report, Financials); fact sheets, performance estimates and the like are logged
-but never mark a period received.
-
-**Custodian statements never satisfy a period.** All managers send their own
-statements separately from custodian (Merrill) copies, so the tracker excludes:
-documents whose allocations span multiple investments (consolidated brokerage
-statements), and documents whose file lives in the archive's `Merrill/` folder
-(single-fund custodian statements, swept there weekly by `canoe_route.py`
-after a local PDF-text check). Caveat: image-only scans can't be text-verified
-and stay put — the known OCR gap.
-
----
-
-## Logs
-
-Two logs, deliberately split so **file names never reach Git**:
-
-| Log | Location | Contents | In Git? |
-|---|---|---|---|
-| `run_history.csv` | repo root | One row per run — timestamp, mode, docs seen, new, duplicates, elapsed. **No file names.** | ✅ yes |
-| `_download_activity.csv` | beside the archive (SharePoint) | One row per downloaded file — timestamp, path, manager, year, category. | ❌ never (gitignored) |
-| `logs/weekly.log` | repo `logs/` (local) | Verbose per-run console output. | ❌ no (gitignored) |
-
-Every run is recorded in `run_history.csv` — including weeks with zero new documents.
-
----
-
-## Roadmap
-
-The download & filing are solved and running. What deterministic (no-AI) tooling
-**cannot** fully resolve — and which is the business case for an approved, in-tenant
-document-intelligence (LLM/OCR) step — includes:
-
-- **Image-only scans** (no text layer) — need OCR / vision AI.
-- **Ambiguous / unmapped funds** in `Unknown Investment/` — need content-level ID.
-  (Docs re-tagged by hand in Canoe can instead be refiled deterministically — a
-  planned no-AI "sync re-tags" step.)
-- **News vs. financial-statement** classification — unreliable by rules alone.
-- **Data-date glitches** from Canoe — would be caught by reading the document's own stated period date.
-
-Any such step must run on an **in-tenant model** (M365 Copilot / Azure OpenAI) with
-IT Lead/CTO sign-off, per the Gen AI policy — never an external API on this data
-without an approved, zero-retention agreement.
+(For a manual run outside `run_sync.sh`, the environment must carry the config — either
+export it, or run via `run_sync.sh` which loads it from the Keychain.)

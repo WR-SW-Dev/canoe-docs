@@ -1,6 +1,11 @@
 # ---- Secrets: NEVER commit ----
 .env
 *.env
+# Certificate private keys / key material (Graph app cert lives OUTSIDE the repo)
+*.pem
+*.key
+*.pfx
+*.p12
 
 # ---- Virtual environment ----
 .venv/

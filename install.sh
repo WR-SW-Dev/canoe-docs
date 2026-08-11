@@ -1,60 +1,43 @@
 #!/bin/zsh
-# One-shot installer for a new machine (macOS).
+# One-shot installer for a new machine (macOS App Server) -- Canoe -> SharePoint sync.
 #
-# Prerequisites (see README): Python 3.9+, the OneDrive client signed in to Wake Robin
-# with the SharePoint "Canoe" library synced locally, and Canoe API credentials to hand.
+# Prerequisites (see README):
+#   - Python 3.9+ and git.
+#   - The Entra ID app-registration certificate PRIVATE KEY file placed on this machine.
+#   - The Graph + Canoe credential values to hand (entered via setup.py after this).
 #
 # Usage:
-#   export CANOE_ARCHIVE_DIR="/Users/<you>/Library/CloudStorage/OneDrive-SharedLibraries-WakeRobin/Investment - Documents/Canoe"
 #   ./install.sh
 #
 # What it does:
 #   1. Creates the Python virtualenv and installs dependencies.
-#   2. Generates the launchd weekly job (Mondays 7am) with the correct paths for THIS machine.
-#   3. Prints the remaining manual steps (credentials, verify, load the job).
-# It does NOT load the job or touch credentials itself.
+#   2. Generates the launchd weekly job (Mondays 7am) that runs run_sync.sh.
+# It does NOT load the job or touch credentials -- see the printed next steps.
 
 set -e
 BASE="${0:A:h}"
 echo "Repo root : $BASE"
 
-# 1. Virtualenv + dependencies -------------------------------------------------
 echo "Creating virtualenv and installing dependencies..."
 python3 -m venv "$BASE/.venv"
 "$BASE/.venv/bin/pip" install -q --upgrade pip
 "$BASE/.venv/bin/pip" install -q -r "$BASE/requirements.txt"
 echo "  venv ready: $BASE/.venv"
 
-# 2. Archive location ----------------------------------------------------------
-: "${CANOE_ARCHIVE_DIR:?Set CANOE_ARCHIVE_DIR to the local synced SharePoint 'Canoe' path first, then re-run ./install.sh}"
-if [ ! -d "$CANOE_ARCHIVE_DIR" ]; then
-    echo "ERROR: CANOE_ARCHIVE_DIR does not exist locally:"
-    echo "  $CANOE_ARCHIVE_DIR"
-    echo "Sync the SharePoint 'Canoe' library via the OneDrive client first."
-    exit 1
-fi
-echo "  archive   : $CANOE_ARCHIVE_DIR"
-
-# 3. Generate the launchd job for this machine --------------------------------
 mkdir -p "$HOME/Library/LaunchAgents" "$BASE/logs"
-PLIST="$HOME/Library/LaunchAgents/co.wakerobin.canoe.weekly.plist"
+PLIST="$HOME/Library/LaunchAgents/co.wakerobin.canoe.sync.plist"
 cat > "$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>co.wakerobin.canoe.weekly</string>
+    <string>co.wakerobin.canoe.sync</string>
     <key>ProgramArguments</key>
     <array>
         <string>/bin/zsh</string>
-        <string>$BASE/run_weekly.sh</string>
+        <string>$BASE/run_sync.sh</string>
     </array>
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>CANOE_ARCHIVE_DIR</key>
-        <string>$CANOE_ARCHIVE_DIR</string>
-    </dict>
     <key>StartCalendarInterval</key>
     <dict>
         <key>Weekday</key><integer>1</integer>
@@ -69,19 +52,22 @@ cat > "$PLIST" <<EOF
 EOF
 echo "  launchd job written: $PLIST"
 
-# 4. Next steps ----------------------------------------------------------------
 cat <<NEXT
 
 Install steps complete. Remaining manual steps:
 
-  1. Add Canoe credentials with the guided wizard (terminal prompts):
+  1. Ensure the app-registration certificate PRIVATE KEY (PEM) is on this machine,
+     readable only by this user (chmod 600), and note its absolute path.
+
+  2. Configure credentials -- writes to the macOS Keychain and validates Graph access:
        "$BASE/.venv/bin/python" "$BASE/setup.py"
-     (or hand-edit '$BASE/py files/.env' -- see README)
-  2. Verify:
+
+  3. Verify Canoe auth:
        cd "$BASE/py files" && ../.venv/bin/python credentials_check.py
-  3. Schedule the weekly job:
+
+  4. Schedule the weekly sync:
        launchctl load -w "$PLIST"
      Test it immediately (optional):
-       launchctl start co.wakerobin.canoe.weekly && tail -20 "$BASE/logs/weekly.log"
+       launchctl start co.wakerobin.canoe.sync && tail -30 "$BASE/logs/run_sync.log"
 
 NEXT
