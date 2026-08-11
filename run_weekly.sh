@@ -26,6 +26,13 @@ echo "===== weekly run: $(date) =====" >> "$LOG"
     --state "$STATE" >> "$LOG" 2>&1
 echo "download exit code: $?" >> "$LOG"
 
+# Sweep custodian (Merrill) statements out of fund folders into Merrill/.
+# Content-verified locally (PyMuPDF text check, no AI); undo log written.
+echo "--- merrill routing: $(date) ---" >> "$LOG"
+ROUTE_STAMP="$(date +%Y%m%d_%H%M%S)" "$VENV" canoe_route.py \
+    --rules merrill --scope all --apply >> "$LOG" 2>&1
+echo "routing exit code: $?" >> "$LOG"
+
 # Refresh the statement tracker (metadata-only) after the document pull.
 echo "--- statement tracker: $(date) ---" >> "$LOG"
 "$VENV" statement_tracker.py --dest "$DEST" >> "$LOG" 2>&1

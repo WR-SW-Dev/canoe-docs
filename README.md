@@ -179,7 +179,9 @@ All commands run from `py files/` using the project venv.
 ../.venv/bin/python canoe_reclassify.py --apply    # applies high-confidence moves (+ undo log)
 
 # Route Merrill/BofA custodian statements to a Merrill/ folder:
-../.venv/bin/python canoe_route.py --rules merrill --apply
+# --scope all also sweeps fund folders (statement categories only) -- custodian
+# statements Canoe mapped to a fund move to Merrill/ too. The weekly job runs this.
+../.venv/bin/python canoe_route.py --rules merrill --scope all --apply
 ```
 
 Placement is **content-aware** (keyed by each file's CRC): distinct files that share
@@ -301,6 +303,14 @@ By default only document types that actually evidence a statement satisfy a
 period (Account Statement, Capital Account Statement, Monthly/Quarterly/Annual
 Report, Financials); fact sheets, performance estimates and the like are logged
 but never mark a period received.
+
+**Custodian statements never satisfy a period.** All managers send their own
+statements separately from custodian (Merrill) copies, so the tracker excludes:
+documents whose allocations span multiple investments (consolidated brokerage
+statements), and documents whose file lives in the archive's `Merrill/` folder
+(single-fund custodian statements, swept there weekly by `canoe_route.py`
+after a local PDF-text check). Caveat: image-only scans can't be text-verified
+and stay put — the known OCR gap.
 
 ---
 

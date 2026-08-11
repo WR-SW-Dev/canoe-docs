@@ -253,23 +253,42 @@ def parse_date(s: str | None) -> date | None:
         return None
 
 
-def statement_rows(docs: list[dict], types_by_fund: dict) -> list[dict]:
+def merrill_stems(dest: str) -> frozenset:
+    """Lowercase file stems (dedup __N suffix stripped) of everything routed to
+    Merrill/. canoe_route.py puts custodian statements there after verifying
+    the PDF text locally; the tracker trusts that folder as the exclusion list.
+    """
+    stems = set()
+    merrill_dir = os.path.join(dest, "Merrill")
+    for root, _dirs, files in os.walk(merrill_dir):
+        for f in files:
+            if not f.startswith("."):
+                stems.add(re.sub(r"__\d+$", "", os.path.splitext(f)[0]).lower())
+    return frozenset(stems)
+
+
+def statement_rows(docs: list[dict], types_by_fund: dict,
+                   excluded_stems: frozenset = frozenset()) -> list[dict]:
     """Flatten docs -> one row per (doc, allocation) that is a statement type.
 
-    Documents whose allocations span more than one investment are excluded:
-    those are consolidated custodian statements (e.g. a Merrill Lynch brokerage
-    statement listing positions in several funds, which Canoe maps to every
-    fund it mentions). They are not statements issued BY the manager, and
-    counting them makes quarterly funds look like monthly reporters.
+    Two kinds of custodian statements are excluded -- managers send their own
+    statements separately, so custodian copies must not satisfy a fund period:
+    - documents whose allocations span more than one investment (consolidated
+      brokerage statements Canoe maps to every fund they mention), and
+    - documents whose file has been routed to the archive's Merrill/ folder
+      (single-fund custodian statements, content-verified by canoe_route.py).
     """
-    excluded = 0
+    excluded_span = excluded_merrill = 0
     rows = []
     for d in docs:
         dtype = (d.get("document_type") or "").strip()
         span = {a.get("investment_id") for a in d.get("allocations") or []
                 if isinstance(a, dict) and a.get("investment_id")}
         if len(span) > 1:
-            excluded += 1
+            excluded_span += 1
+            continue
+        if (d.get("name") or "").strip().lower() in excluded_stems:
+            excluded_merrill += 1
             continue
         for a in d.get("allocations") or []:
             inv = (a.get("investment") or "").strip()
@@ -292,9 +311,9 @@ def statement_rows(docs: list[dict], types_by_fund: dict) -> list[dict]:
                 "doc_id": d.get("id"),
                 "doc_name": d.get("name") or "",
             })
-    if excluded:
-        print(f"  excluded    : {excluded} consolidated custodian statements "
-              f"(span multiple investments)")
+    if excluded_span or excluded_merrill:
+        print(f"  excluded    : {excluded_span} consolidated (multi-investment) + "
+              f"{excluded_merrill} Merrill-routed custodian statements")
     return rows
 
 
@@ -1080,14 +1099,15 @@ def main() -> None:
     docs = load_metadata(os.path.join(backend, CACHE_FILE), args.refresh, type_names)
     print(f"  documents   : {len(docs)} across {len(type_names)} statement types (all categories)")
 
-    base_rows = statement_rows(docs, {})
+    routed = merrill_stems(dest)
+    base_rows = statement_rows(docs, {}, routed)
     if sched is None:
         print("  no schedule found -- seeding from history "
               f"(review and edit {SCHEDULE_FILE}!)")
         sched = seed_schedule(base_rows, sched_path)
     else:
         sched = sync_new_funds(sched, base_rows, sched_path)
-    rows = statement_rows(docs, overrides) if overrides else base_rows
+    rows = statement_rows(docs, overrides, routed) if overrides else base_rows
     print(f"  statements  : {len(rows)} fund-allocation rows "
           f"across {len({r['investment'] for r in rows})} funds")
 

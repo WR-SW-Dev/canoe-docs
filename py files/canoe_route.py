@@ -84,6 +84,10 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Route Merrill / news docs to dedicated folders.")
     ap.add_argument("--dir", default=DEFAULT_DIR)
     ap.add_argument("--rules", default="merrill,news", help="Comma list: merrill,news")
+    ap.add_argument("--scope", default="unknown", choices=["unknown", "all"],
+                    help="unknown = only the '%s' folder (default); all = every fund "
+                         "folder too, so custodian statements Canoe mapped to a fund "
+                         "are swept into Merrill/ as well." % SCOPE_SUBDIR)
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--undo", default=None)
     args = ap.parse_args()
@@ -102,32 +106,54 @@ def main() -> None:
 
     want = {r.strip().lower() for r in args.rules.split(",")}
     label_for = {"Merrill": "merrill", "News Articles": "news"}
-    scope = os.path.join(dir_path, SCOPE_SUBDIR)
+    # Destination folders (and the tracker's folder) are never scanned.
+    skip_top = {"Merrill", "News Articles", "_statement_tracker"}
+    if args.scope == "all":
+        scopes = [os.path.join(dir_path, d) for d in sorted(os.listdir(dir_path))
+                  if os.path.isdir(os.path.join(dir_path, d))
+                  and d not in skip_top and not d.startswith(".")]
+    else:
+        scopes = [os.path.join(dir_path, SCOPE_SUBDIR)]
+
+    # In fund folders, only statement-ish categories are eligible to move.
+    # Capital calls, distributions, K-1s, legal docs etc. delivered via the
+    # custodian still belong under their fund.
+    SWEEP_CATEGORIES = {"Financial Statements & Performance", "Other",
+                        "unknown", "Uncategorized", "Undated"}
 
     rows, moves = [], []
     counts = {"Merrill": 0, "News Articles": 0}
     image_only = 0
 
-    for dp, _, fs in os.walk(scope):
-        for f in fs:
-            if not f.lower().endswith(".pdf"):
+    for scope in scopes:
+        in_fund_folder = os.path.basename(scope) != SCOPE_SUBDIR
+        for dp, _, fs in os.walk(scope):
+            if in_fund_folder and os.path.basename(dp) not in SWEEP_CATEGORIES \
+                    and any(f.lower().endswith(".pdf") for f in fs):
                 continue
-            p = os.path.join(dp, f)
-            text = extract_text(p)
-            if len(text.strip()) < 20:
-                image_only += 1
-                continue
-            label = classify(text, f)
-            if not label or label_for[label] not in want:
-                continue
-            parts = os.path.relpath(p, dir_path).split(os.sep)
-            # parts = [Unknown Investment, Year, Category, file] -> keep Year/Category
-            sub = parts[1:-1]
-            new_name = re.sub(re.escape(SCOPE_SUBDIR), label, f, count=1) if SCOPE_SUBDIR in f else f
-            new_rel = os.path.join(label, *sub, new_name)
-            counts[label] += 1
-            moves.append({"label": label, "src": p, "dst": os.path.join(dir_path, new_rel)})
-            rows.append({"label": label, "current": os.path.relpath(p, dir_path), "proposed": new_rel})
+            for f in fs:
+                if not f.lower().endswith(".pdf"):
+                    continue
+                p = os.path.join(dp, f)
+                text = extract_text(p)
+                if len(text.strip()) < 20:
+                    image_only += 1
+                    continue
+                label = classify(text, f)
+                if not label or label_for[label] not in want:
+                    continue
+                parts = os.path.relpath(p, dir_path).split(os.sep)
+                # parts = [<top folder>, Year, Category, file] -> keep Year/Category
+                sub = parts[1:-1]
+                # Files swept from a FUND folder keep their name (provenance +
+                # the tracker matches Canoe doc names to file stems); only the
+                # generic "Unknown Investment-" prefix is worth rewriting.
+                new_name = (re.sub(re.escape(SCOPE_SUBDIR), label, f, count=1)
+                            if SCOPE_SUBDIR in f else f)
+                new_rel = os.path.join(label, *sub, new_name)
+                counts[label] += 1
+                moves.append({"label": label, "src": p, "dst": os.path.join(dir_path, new_rel)})
+                rows.append({"label": label, "current": os.path.relpath(p, dir_path), "proposed": new_rel})
 
     report = os.path.join(dir_path, "_route_review.csv")
     if rows:
@@ -156,7 +182,7 @@ def main() -> None:
         json.dump(safe, open(log_path, "w"), indent=2)
 
     print("\n--- Route summary ---")
-    print(f"  scope                : {SCOPE_SUBDIR}")
+    print(f"  scope                : {args.scope} ({len(scopes)} folder(s))")
     print(f"  image-only (skipped) : {image_only}")
     print(f"  Merrill matches      : {counts['Merrill']}")
     print(f"  News matches         : {counts['News Articles']}")
