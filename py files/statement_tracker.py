@@ -197,11 +197,20 @@ def load_metadata(cache_path: str, refresh: str, type_names: list[str]) -> list[
     if cache is not None and set(cache.get("types", [])) != set(t.lower() for t in type_names):
         print("  document-type set changed -- full re-pull")
         cache = None
+    # Deltas can't notice a doc re-typed OUT of the statement set (the type
+    # filter stops returning it), so re-baseline in full once a month.
+    if cache is not None:
+        full_at = cache.get("full_pulled_at")
+        if not full_at or (datetime.now(timezone.utc)
+                           - datetime.fromisoformat(full_at)).days >= 30:
+            print("  monthly re-baseline -- full re-pull")
+            cache = None
 
     if cache is None:
         print("  full metadata pull (first run or --refresh full) -- this can take a while...")
         docs = _pull({"document_type": types_param}, "full pull")
         by_id = {d["id"]: d for d in docs if d.get("id")}
+        full_pulled_at = datetime.now(timezone.utc).isoformat()
     else:
         by_id = {d["id"]: d for d in cache.get("docs", []) if d.get("id")}
         # Re-pull anything modified since just before the last run, so re-tags
@@ -213,8 +222,10 @@ def load_metadata(cache_path: str, refresh: str, type_names: list[str]) -> list[
             if d.get("id"):
                 by_id[d["id"]] = d
         print(f"  cache: {len(by_id)} docs after merging {len(fresh)} modified")
+        full_pulled_at = cache.get("full_pulled_at") or datetime.now(timezone.utc).isoformat()
 
     json.dump({"pulled_at": datetime.now(timezone.utc).isoformat(),
+               "full_pulled_at": full_pulled_at,
                "types": sorted(t.lower() for t in type_names),
                "docs": list(by_id.values())}, open(cache_path, "w"))
     return list(by_id.values())
@@ -500,8 +511,31 @@ def sync_new_funds(sched: list[dict], rows: list[dict], path: str) -> list[dict]
 # Reconciliation
 # --------------------------------------------------------------------------- #
 
+# When several documents cover the same period, the one representing the actual
+# statement wins (drives the grid's "Link" and the report detail): a capital
+# account statement beats a quarterly report beats audited financials.
+TYPE_PRIORITY = {
+    "capital account statement": 0,
+    "account statement": 1,
+    "monthly report": 2,
+    "quarterly report": 3,
+    "annual report": 4,
+    "financials": 5,
+}
+
+def _doc_rank(m: dict) -> tuple:
+    return (TYPE_PRIORITY.get((m["document_type"] or "").lower(), 9),
+            m["uploaded"] or date.min)
+
 def reconcile(sched: list[dict], rows: list[dict], today: date) -> list[dict]:
-    """Return one record per tracked fund x period with a status."""
+    """Return one record per tracked fund x period with a status.
+
+    Fund-level records (entity == "") count every statement for the fund,
+    including ones Canoe never tagged to an entity. Funds where 2+ named
+    entities invest additionally get per-entity records, each tracked from
+    that entity's own first statement -- so each entity's statements can be
+    checked (and linked) separately.
+    """
     by_fund: dict[str, list[dict]] = {}
     for r in rows:
         by_fund.setdefault(r["investment"], []).append(r)
@@ -520,43 +554,57 @@ def reconcile(sched: list[dict], rows: list[dict], today: date) -> list[dict]:
             grace = DEFAULT_GRACE[freq]
         start = parse_date(s.get("start_date")) or date(today.year - 1, 1, 1)
 
-        docs_by_period: dict[str, list[dict]] = {}
-        for r in by_fund.get(inv, []):
-            if r["data_date"]:
-                docs_by_period.setdefault(period_of(r["data_date"], freq), []).append(r)
+        fund_rows = by_fund.get(inv, [])
+        named = sorted({r["entity"] for r in fund_rows
+                        if r["entity"] and r["entity"] != "--"}, key=str.lower)
+        groups = [("", fund_rows)]
+        if len(named) >= 2:
+            groups += [(e, [r for r in fund_rows if r["entity"] == e]) for e in named]
 
-        for p in periods_between(start, today, freq):
-            pe = period_end(p)
-            due = pe + timedelta(days=grace + (Q4_EXTRA_DAYS if pe.month == 12 else 0))
-            matched = docs_by_period.get(p, [])
-            clean = [m for m in matched
-                     if m["document_status"].lower() not in REVIEW_STATUSES]
-            flagged = [m for m in matched
-                       if m["document_status"].lower() in REVIEW_STATUSES]
-            if clean:
-                received = min((m["uploaded"] for m in clean if m["uploaded"]), default=None)
-                status = "received" if (received is None or received <= due) else "late"
-                best = clean[0]
-            elif flagged:
-                status, received, best = "review", None, flagged[0]
-            else:
-                best, received = None, None
-                status = "overdue" if today > due else "pending"
-            out.append({
-                "fund_sponsor": s.get("fund_sponsor") or "",
-                "investment": inv,
-                "frequency": freq,
-                "period": p,
-                "period_end": pe.isoformat(),
-                "due": due.isoformat(),
-                "status": status,
-                "received_date": received.isoformat() if received else "",
-                "data_date": best["data_date"].isoformat() if best and best["data_date"] else "",
-                "document_type": best["document_type"] if best else "",
-                "document_status": best["document_status"] if best else "",
-                "doc_name": best["doc_name"] if best else "",
-                "n_docs": len(matched),
-            })
+        for entity, ent_rows in groups:
+            ent_dates = [r["data_date"] for r in ent_rows if r["data_date"]]
+            g_start = start
+            if entity and ent_dates:
+                g_start = max(start, min(ent_dates))
+
+            docs_by_period: dict[str, list[dict]] = {}
+            for r in ent_rows:
+                if r["data_date"]:
+                    docs_by_period.setdefault(period_of(r["data_date"], freq), []).append(r)
+
+            for p in periods_between(g_start, today, freq):
+                pe = period_end(p)
+                due = pe + timedelta(days=grace + (Q4_EXTRA_DAYS if pe.month == 12 else 0))
+                matched = sorted(docs_by_period.get(p, []), key=_doc_rank)
+                clean = [m for m in matched
+                         if m["document_status"].lower() not in REVIEW_STATUSES]
+                flagged = [m for m in matched
+                           if m["document_status"].lower() in REVIEW_STATUSES]
+                if clean:
+                    received = min((m["uploaded"] for m in clean if m["uploaded"]), default=None)
+                    status = "received" if (received is None or received <= due) else "late"
+                    best = clean[0]
+                elif flagged:
+                    status, received, best = "review", None, flagged[0]
+                else:
+                    best, received = None, None
+                    status = "overdue" if today > due else "pending"
+                out.append({
+                    "fund_sponsor": s.get("fund_sponsor") or "",
+                    "investment": inv,
+                    "entity": entity,
+                    "frequency": freq,
+                    "period": p,
+                    "period_end": pe.isoformat(),
+                    "due": due.isoformat(),
+                    "status": status,
+                    "received_date": received.isoformat() if received else "",
+                    "data_date": best["data_date"].isoformat() if best and best["data_date"] else "",
+                    "document_type": best["document_type"] if best else "",
+                    "document_status": best["document_status"] if best else "",
+                    "doc_name": best["doc_name"] if best else "",
+                    "n_docs": len(matched),
+                })
     return out
 
 
@@ -599,6 +647,9 @@ STATUS_META = {
 
 def write_html(path: str, recs: list[dict], undated: list[dict],
                periods_shown: int, generated: str) -> None:
+    # The HTML detail stays at fund grain; entity detail lives in the grid
+    # and the received log.
+    recs = [r for r in recs if not r.get("entity")]
     freq_rank = {"monthly": 0, "quarterly": 1, "annual": 2}
     # column set = union of periods, most recent N, grouped by frequency
     by_freq: dict[str, list[dict]] = {}
@@ -748,10 +799,27 @@ def write_xlsx(path: str, recs: list[dict], dest: str) -> None:
     center = Alignment(horizontal="center")
     index = build_archive_index(dest)
 
-    LEGEND = [(green, "= Received (click \"Link\" to open the statement)"),
-              (red, "= Expected, not received in Canoe"),
-              (None, "= Not tracked for this period")]
-    HDR_ROW = len(LEGEND) + 2          # legend, blank row, then the header row
+    # NB: labels must not start with "=" or Excel treats them as formulas (#NAME?).
+    LEGEND = [(green, 'Received -- click "Link" to open the statement'),
+              (red, "Expected, not received in Canoe"),
+              (None, "Not tracked for this period")]
+    NOTE = ("Funds with multiple investing entities show one sub-row per entity; "
+            "the fund row counts every statement, including ones not yet tagged "
+            "to an entity in Canoe.")
+    HDR_ROW = len(LEGEND) + 3          # legend, note, blank row, then the header
+
+    def paint(c, rec):
+        if int(rec["n_docs"] or 0) > 0:
+            c.fill = green
+            link = _file_link(rec, index, dest)
+            if link:
+                # Give the cell display text, otherwise Excel renders the raw URL.
+                c.value = "Link"
+                c.hyperlink = link
+                c.font = Font(color="1B5E20", underline="single")
+                c.alignment = center
+        else:
+            c.fill = red
 
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
@@ -763,7 +831,7 @@ def write_xlsx(path: str, recs: list[dict], dest: str) -> None:
         ws = wb.create_sheet(sheet_name)
         periods = sorted({r["period"] for r in rs}, key=period_end)
         funds = sorted({r["investment"] for r in rs}, key=str.lower)
-        cell_rec = {(r["investment"], r["period"]): r for r in rs}
+        cell_rec = {(r["investment"], r["entity"], r["period"]): r for r in rs}
 
         for i, (fill, label) in enumerate(LEGEND, start=1):
             sw = ws.cell(i, 2)
@@ -771,34 +839,42 @@ def write_xlsx(path: str, recs: list[dict], dest: str) -> None:
             if fill:
                 sw.fill = fill
             ws.cell(i, 3, label)
+        ws.cell(len(LEGEND) + 1, 3, NOTE).font = Font(italic=True, color="666666")
 
-        ws.cell(HDR_ROW, 1, "Fund").font = Font(bold=True)
+        ws.cell(HDR_ROW, 1, "Fund / Entity").font = Font(bold=True)
         for j, p in enumerate(periods, start=2):
             c = ws.cell(HDR_ROW, j, period_label(p))
             c.font = Font(bold=True)
             c.alignment = center
-        for i, inv in enumerate(funds, start=HDR_ROW + 1):
-            ws.cell(i, 1, inv).border = thin
+
+        i = HDR_ROW + 1
+        for inv in funds:
+            entities = sorted({r["entity"] for r in rs
+                               if r["investment"] == inv and r["entity"]}, key=str.lower)
+            name = ws.cell(i, 1, inv)
+            name.border = thin
+            if entities:
+                name.font = Font(bold=True)
             for j, p in enumerate(periods, start=2):
                 c = ws.cell(i, j)
                 c.border = thin
-                rec = cell_rec.get((inv, p))
-                if rec is None:
-                    continue
-                if int(rec["n_docs"] or 0) > 0:
-                    c.fill = green
-                    link = _file_link(rec, index, dest)
-                    if link:
-                        # Give the cell display text, otherwise Excel renders
-                        # the raw URL in the cell.
-                        c.value = "Link"
-                        c.hyperlink = link
-                        c.font = Font(color="1B5E20", underline="single")
-                        c.alignment = center
-                else:
-                    c.fill = red
+                rec = cell_rec.get((inv, "", p))
+                if rec is not None:
+                    paint(c, rec)
+            i += 1
+            for ent in entities:
+                lbl = ws.cell(i, 1, "    " + ent)
+                lbl.border = thin
+                lbl.font = Font(color="444444")
+                for j, p in enumerate(periods, start=2):
+                    c = ws.cell(i, j)
+                    c.border = thin
+                    rec = cell_rec.get((inv, ent, p))
+                    if rec is not None:
+                        paint(c, rec)
+                i += 1
 
-        ws.column_dimensions["A"].width = 42
+        ws.column_dimensions["A"].width = 48
         for j in range(2, 2 + len(periods)):
             ws.column_dimensions[openpyxl.utils.get_column_letter(j)].width = 10
         ws.freeze_panes = f"B{HDR_ROW + 1}"
@@ -835,7 +911,7 @@ def build_digest(backend: str, rows: list[dict], recs: list[dict]) -> tuple[str,
     json.dump({"updated": datetime.now(timezone.utc).isoformat(),
                "reported_ids": sorted(seen)}, open(state_path, "w"))
 
-    n_over = sum(1 for r in recs if r["status"] == "overdue")
+    n_over = sum(1 for r in recs if r["status"] == "overdue" and not r.get("entity"))
     esc = html.escape
     body = [f"""<meta charset="utf-8">
 <style> body {{ font: 14px -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; color: #24292f; }}
@@ -845,9 +921,12 @@ def build_digest(backend: str, rows: list[dict], recs: list[dict]) -> tuple[str,
 <p><b>{len(new)}</b> new statement(s) since the last pull &middot; {n_over} period(s) currently overdue.
 See the <i>Statement Tracker.xlsx</i> grid in the Canoe SharePoint library for the full picture.</p>"""]
     if new:
-        body.append("<table><tr><th>Fund</th><th>Type</th><th>Period date</th><th>Uploaded</th></tr>")
+        body.append("<table><tr><th>Fund</th><th>Entity</th><th>Type</th>"
+                    "<th>Period date</th><th>Uploaded</th></tr>")
         for r in new:
-            body.append(f"<tr><td>{esc(r['investment'])}</td><td>{esc(r['document_type'])}</td>"
+            ent = r["entity"] if r["entity"] not in ("", "--") else ""
+            body.append(f"<tr><td>{esc(r['investment'])}</td><td>{esc(ent)}</td>"
+                        f"<td>{esc(r['document_type'])}</td>"
                         f"<td>{esc(r['data_date'].isoformat() if r['data_date'] else 'undated')}</td>"
                         f"<td>{esc(r['uploaded'].isoformat() if r['uploaded'] else '')}</td></tr>")
         body.append("</table>")
@@ -973,9 +1052,11 @@ def main() -> None:
                if (s.get("track") or "").strip().lower() in ("yes", "y", "true", "1")}
     undated = sorted((r for r in rows if r["data_date"] is None and r["investment"] in tracked),
                      key=lambda r: r["investment"].lower())
-    n_over = sum(1 for r in recs if r["status"] == "overdue")
-    n_review = sum(1 for r in recs if r["status"] == "review")
-    print(f"  reconciled  : {len(recs)} fund-periods | overdue {n_over} | "
+    fund_recs = [r for r in recs if not r["entity"]]
+    n_over = sum(1 for r in fund_recs if r["status"] == "overdue")
+    n_review = sum(1 for r in fund_recs if r["status"] == "review")
+    print(f"  reconciled  : {len(fund_recs)} fund-periods "
+          f"({len(recs) - len(fund_recs)} entity sub-rows) | overdue {n_over} | "
           f"review {n_review} | undated {len(undated)}")
 
     generated = datetime.now().strftime("%Y-%m-%d %H:%M")
