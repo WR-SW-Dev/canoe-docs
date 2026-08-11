@@ -18,10 +18,11 @@ How it works
 3. Reconcile: for each tracked fund and each period since tracking start,
    decide Received / Pending / OVERDUE / Review.
 4. Write outputs beside the archive (SharePoint-synced, team-visible):
-   - Statement Tracker.html   -- status dashboard
-   - statement_status.csv     -- flat fund x period status table
-   - statement_received_log.csv -- every statement seen, with data date & upload
-   - Statement Tracker.xlsx   -- same, as a workbook (if openpyxl is installed)
+   - _statement_tracker/Statement Tracker.xlsx  -- THE team grid: green = received,
+     red = not; one sheet per cadence. The only file in the folder.
+   - _statement_tracker/backend/               -- supporting detail: HTML status
+     dashboard, status/received CSVs, the editable schedule workbook
+     (statement_schedule.xlsx), and the metadata cache.
 
 Canoe review flags never auto-confirm a period: a document whose status is not
 Complete routes to the Review column instead of silently satisfying the period.
@@ -43,7 +44,10 @@ import sys
 import time
 from datetime import date, datetime, timedelta, timezone
 
+import openpyxl
 import requests
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.worksheet.datavalidation import DataValidation
 
 import canoe_auth
 
@@ -74,8 +78,10 @@ DEFAULT_GRACE = {"monthly": 45, "quarterly": 90, "annual": 180}
 Q4_EXTRA_DAYS = 30
 
 SUBDIR = "_statement_tracker"
-SCHEDULE_FILE = "statement_schedule.csv"
+BACKEND = "backend"
+SCHEDULE_FILE = "statement_schedule.xlsx"
 CACHE_FILE = "statement_metadata_cache.json"
+GRID_FILE = "Statement Tracker.xlsx"
 
 
 # --------------------------------------------------------------------------- #
@@ -375,18 +381,82 @@ def seed_schedule(rows: list[dict], path: str) -> list[dict]:
     return sched
 
 
+SCHEDULE_HELP = [
+    "Statement tracker schedule -- edit freely; the tracker re-reads this file each run.",
+    "",
+    "frequency : monthly | quarterly | annual | none",
+    "track     : yes | no  (no = fund is ignored, e.g. wind-downs)",
+    f"grace_days: days after period end before a missing statement is OVERDUE"
+    f" (December period-ends get +{Q4_EXTRA_DAYS} automatically).",
+    "start_date: first period the tracker should expect (YYYY-MM-DD).",
+    "doc_types : optional ;-separated override of which document types satisfy"
+    " a period for this fund (default: Account Statement, Capital Account"
+    " Statement, Monthly/Quarterly/Annual Report, Financials).",
+    "",
+    "New funds appearing in Canoe are appended automatically with a NEW note.",
+]
+
+
 def write_schedule(path: str, sched: list[dict]) -> None:
-    with open(path, "w", newline="") as f:
-        f.write("# Statement tracker schedule -- edit freely; the tracker re-reads it each run.\n")
-        f.write("# frequency: monthly | quarterly | annual | none    track: yes | no\n")
-        f.write("# grace_days: days after period end before a missing statement is OVERDUE (Q4/annual get +%d automatically).\n" % Q4_EXTRA_DAYS)
-        f.write("# doc_types: optional ;-separated override of which document types satisfy a period for this fund.\n")
-        w = csv.DictWriter(f, fieldnames=SCHEDULE_HEADER)
-        w.writeheader()
-        w.writerows(sched)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Schedule"
+    ws.append(SCHEDULE_HEADER)
+    for c in ws[1]:
+        c.font = Font(bold=True)
+    for s in sched:
+        ws.append([s.get(k, "") for k in SCHEDULE_HEADER])
+    # Dropdowns keep hand edits valid (rows beyond the current count included).
+    last = max(len(sched) + 200, 500)
+    dv_freq = DataValidation(type="list", formula1='"monthly,quarterly,annual,none"',
+                             allow_blank=True)
+    dv_track = DataValidation(type="list", formula1='"yes,no"', allow_blank=True)
+    ws.add_data_validation(dv_freq)
+    ws.add_data_validation(dv_track)
+    col_f = SCHEDULE_HEADER.index("frequency") + 1
+    col_t = SCHEDULE_HEADER.index("track") + 1
+    dv_freq.add(f"{openpyxl.utils.get_column_letter(col_f)}2:"
+                f"{openpyxl.utils.get_column_letter(col_f)}{last}")
+    dv_track.add(f"{openpyxl.utils.get_column_letter(col_t)}2:"
+                 f"{openpyxl.utils.get_column_letter(col_t)}{last}")
+    widths = {"A": 42, "B": 24, "C": 11, "D": 11, "E": 7, "F": 12, "G": 30, "H": 60}
+    for col, w in widths.items():
+        ws.column_dimensions[col].width = w
+    ws.freeze_panes = "A2"
+
+    info = wb.create_sheet("How to use")
+    for line in SCHEDULE_HELP:
+        info.append([line])
+    info.column_dimensions["A"].width = 110
+    wb.save(path)
+
+
+def _cell_str(v) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, datetime):
+        return v.date().isoformat()
+    if isinstance(v, date):
+        return v.isoformat()
+    return str(v).strip()
 
 
 def load_schedule(path: str) -> list[dict]:
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    ws = wb["Schedule"] if "Schedule" in wb.sheetnames else wb.active
+    rows = ws.iter_rows(values_only=True)
+    header = [_cell_str(h) for h in next(rows, [])]
+    out = []
+    for r in rows:
+        rec = {h: _cell_str(v) for h, v in zip(header, r) if h}
+        if rec.get("investment"):
+            out.append(rec)
+    wb.close()
+    return out
+
+
+def load_schedule_csv(path: str) -> list[dict]:
+    """Reader for the legacy csv schedule (pre-2026-08 layout); migration only."""
     with open(path, newline="") as f:
         reader = csv.DictReader(line for line in f if not line.startswith("#"))
         return [row for row in reader if (row.get("investment") or "").strip()]
@@ -620,15 +690,9 @@ edit <code>{SCHEDULE_FILE}</code> to change frequencies, grace periods, or track
         f.write("\n".join(parts))
 
 
-def write_xlsx(path: str, recs: list[dict]) -> bool:
+def write_xlsx(path: str, recs: list[dict]) -> None:
     """Simple received grid: one sheet per cadence, one row per fund, one column
     per period. Green = a statement for that period is in Canoe, red = not."""
-    try:
-        import openpyxl
-        from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-    except ImportError:
-        return False
-
     green = PatternFill("solid", fgColor="63BE7B")
     red = PatternFill("solid", fgColor="F8696B")
     thin = Border(*[Side(style="thin", color="D9D9D9")] * 4)
@@ -669,7 +733,36 @@ def write_xlsx(path: str, recs: list[dict]) -> bool:
         ws.freeze_panes = "C2"
 
     wb.save(path)
-    return True
+
+
+# --------------------------------------------------------------------------- #
+# Layout migration (pre-2026-08 file locations)
+# --------------------------------------------------------------------------- #
+
+def migrate_layout(dest: str, outdir: str, backend: str) -> None:
+    """Move files from the old flat layout into backend/; one-time, idempotent."""
+    moves = {
+        os.path.join(outdir, CACHE_FILE): os.path.join(backend, CACHE_FILE),
+        os.path.join(outdir, "Statement Tracker.html"): os.path.join(backend, "Statement Tracker.html"),
+        os.path.join(outdir, "statement_status.csv"): os.path.join(backend, "statement_status.csv"),
+        os.path.join(outdir, "statement_received_log.csv"): os.path.join(backend, "statement_received_log.csv"),
+    }
+    for src, dst in moves.items():
+        if os.path.exists(src) and not os.path.exists(dst):
+            os.replace(src, dst)
+            print(f"  migrated    : {os.path.basename(src)} -> {BACKEND}/")
+    old_csv = os.path.join(outdir, "statement_schedule.csv")
+    new_sched = os.path.join(backend, SCHEDULE_FILE)
+    if os.path.exists(old_csv):
+        if not os.path.exists(new_sched):
+            write_schedule(new_sched, load_schedule_csv(old_csv))
+            print(f"  migrated    : statement_schedule.csv -> {BACKEND}/{SCHEDULE_FILE}")
+        os.remove(old_csv)
+    # The grid used to live at the archive root; it is regenerated in outdir now.
+    old_grid = os.path.join(dest, GRID_FILE)
+    if os.path.exists(old_grid):
+        os.remove(old_grid)
+        print(f"  migrated    : removed old root copy of {GRID_FILE}")
 
 
 # --------------------------------------------------------------------------- #
@@ -687,17 +780,21 @@ def main() -> None:
                     help="How many recent periods to show per grid (default 13).")
     args = ap.parse_args()
 
-    outdir = os.path.join(os.path.abspath(os.path.expanduser(args.dest)), SUBDIR)
-    os.makedirs(outdir, exist_ok=True)
+    dest = os.path.abspath(os.path.expanduser(args.dest))
+    outdir = os.path.join(dest, SUBDIR)
+    backend = os.path.join(outdir, BACKEND)
+    os.makedirs(backend, exist_ok=True)
     today = date.today()
 
     print("Statement tracker")
-    print(f"  outputs     : {outdir}")
+    print(f"  grid        : {os.path.join(outdir, GRID_FILE)}")
+    print(f"  backend     : {backend}")
+    migrate_layout(dest, outdir, backend)
 
-    docs = load_metadata(os.path.join(outdir, CACHE_FILE), args.refresh)
+    docs = load_metadata(os.path.join(backend, CACHE_FILE), args.refresh)
     print(f"  documents   : {len(docs)} in category '{CATEGORY}'")
 
-    sched_path = os.path.join(outdir, SCHEDULE_FILE)
+    sched_path = os.path.join(backend, SCHEDULE_FILE)
     # Build rows twice-cheaply: first with defaults to seed/sync the schedule,
     # then honoring any per-fund doc_types overrides from the schedule.
     base_rows = statement_rows(docs, {})
@@ -729,17 +826,12 @@ def main() -> None:
           f"review {n_review} | undated {len(undated)}")
 
     generated = datetime.now().strftime("%Y-%m-%d %H:%M")
-    write_status_csv(os.path.join(outdir, "statement_status.csv"), recs)
-    write_received_log(os.path.join(outdir, "statement_received_log.csv"), rows)
-    write_html(os.path.join(outdir, "Statement Tracker.html"), recs, undated, args.periods, generated)
-    # The workbook is the team's primary view -- it goes at the archive root.
-    xlsx_path = os.path.join(os.path.dirname(outdir), "Statement Tracker.xlsx")
-    if write_xlsx(xlsx_path, recs):
-        print(f"  wrote       : {xlsx_path}")
-        print("  wrote       : Statement Tracker.html, statement_status.csv, received log")
-    else:
-        print("  wrote       : Statement Tracker.html, statement_status.csv, received log")
-        print("  (openpyxl not installed -- skipped the .xlsx; pip install openpyxl)")
+    write_status_csv(os.path.join(backend, "statement_status.csv"), recs)
+    write_received_log(os.path.join(backend, "statement_received_log.csv"), rows)
+    write_html(os.path.join(backend, "Statement Tracker.html"), recs, undated, args.periods, generated)
+    # The grid is the team's view -- the only file directly in _statement_tracker/.
+    write_xlsx(os.path.join(outdir, GRID_FILE), recs)
+    print(f"  wrote       : {GRID_FILE} + backend detail (html, csvs)")
 
 
 if __name__ == "__main__":

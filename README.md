@@ -209,21 +209,26 @@ metadata-and-rules only. It reads Canoe's structured fields (fund, sponsor,
 data date, document type, validation status) via `GET /v1/documents/data` and
 **never opens a document body** — no Gen AI, nothing new to approve.
 
-The weekly job runs it automatically after each Monday pull. The primary view is
-a simple green/red workbook at the archive root; supporting detail sits in a
-subfolder:
+The weekly job runs it automatically after each Monday pull. The team-facing
+grid is deliberately the **only file** in `_statement_tracker/`; everything
+supporting it lives in `backend/`:
 
 ```
-Canoe/Statement Tracker.xlsx        # PRIMARY: green = received, red = not, one
-                                    # sheet per cadence (Monthly / Quarterly / Annual),
-                                    # one row per fund, one column per period
 Canoe/_statement_tracker/
-├── Statement Tracker.html          # detail dashboard: action-needed list + status grids
-├── statement_status.csv            # flat fund x period status table
-├── statement_received_log.csv      # every statement seen (data date, upload date, status)
-├── statement_schedule.csv          # EDITABLE config — the expected schedule
-└── statement_metadata_cache.json   # metadata cache (auto-managed)
+├── Statement Tracker.xlsx          # THE grid: green = received, red = not; one
+│                                   # sheet per cadence (Monthly / Quarterly / Annual),
+│                                   # one row per fund, one column per period
+└── backend/
+    ├── statement_schedule.xlsx     # EDITABLE config — the expected schedule
+    │                               # (dropdowns for frequency/track; "How to use" tab)
+    ├── Statement Tracker.html      # detail dashboard: action-needed list + 5-status grids
+    ├── statement_status.csv        # flat fund x period status table
+    ├── statement_received_log.csv  # every statement seen (data date, upload date, status)
+    └── statement_metadata_cache.json  # metadata cache (auto-managed)
 ```
+
+(Older layouts — the grid at the archive root, csv schedule, flat files — are
+migrated automatically on the first run of the new version.)
 
 **How a period is judged.** For each tracked fund, every monthly/quarterly/annual
 period from its `start_date` gets one status:
@@ -239,10 +244,10 @@ period from its `start_date` gets one status:
 The due date is period end + `grace_days` (defaults: monthly 45, quarterly 90,
 annual 180; December period-ends get +30 for audit-season lag).
 
-**The schedule is the source of truth — edit it.** `statement_schedule.csv` is
-auto-seeded on first run (frequency inferred from 12 months of history, with
-Canoe's own reporting-frequency field as a tie-breaker) and safe to edit: change
-`frequency`, `grace_days`, set `track=no` for wind-downs, or list `doc_types`
+**The schedule is the source of truth — edit it.** `backend/statement_schedule.xlsx`
+is auto-seeded on first run (frequency inferred from 12 months of history, with
+Canoe's own reporting-frequency field as a tie-breaker) and safe to edit in Excel:
+change `frequency`, `grace_days`, set `track=no` for wind-downs, or list `doc_types`
 overrides for funds whose "statement" arrives under a different label. Funds that
 appear in Canoe later are appended automatically with a `NEW` note.
 

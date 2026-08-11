@@ -24,6 +24,8 @@ statement_metadata_cache.json
 statement_status.csv
 statement_received_log.csv
 statement_schedule.csv
+statement_schedule.xlsx
+Statement Tracker.xlsx
 
 # ---- Reclassify / routing / activity artifacts (contain file names) ----
 _reclassify_*.json
