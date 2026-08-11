@@ -354,42 +354,47 @@ SCHEDULE_HEADER = ["investment", "fund_sponsor", "frequency", "grace_days",
                    "track", "start_date", "doc_types", "notes"]
 
 def infer_frequency(dates: list[date], canoe_freq: str) -> tuple[str, str]:
-    """Return (frequency, source). History wins; Canoe's field breaks ties.
+    """Return (frequency, source).
 
-    The 12-month inference window is anchored at the fund's LAST data date, not
-    at today -- a fund that has fallen behind still shows its true cadence
-    instead of an empty window (which would defer to Canoe's often-wrong field).
+    Two signals: the filing history (12-month window anchored at the fund's
+    LAST data date, so a fund that has fallen behind still shows its true
+    cadence) and Canoe's own frequency field. When they disagree, the LESS
+    frequent one wins: custodian notice feeds (e.g. Merrill) make quarterly
+    funds look monthly, and Canoe's field sometimes says Monthly for quarterly
+    PE funds -- in both cases the sparser cadence is the honest one. Bias is
+    toward fewer false "missing statement" alarms; genuinely monthly funds
+    that lose the coin toss are one edit away in the schedule.
     """
     cf = canoe_freq.lower()
-    if not dates:
-        if "month" in cf:
-            return "monthly", "canoe"
-        if "quarter" in cf:
-            return "quarterly", "canoe"
-        if "annual" in cf or "year" in cf:
-            return "annual", "canoe"
-        return "none", "no statements seen"
-    anchor = max(dates)
-    horizon = anchor - timedelta(days=365)
-    months = {(d.year, d.month) for d in dates if horizon <= d <= anchor}
-    n = len(months)
-    if n >= 9:
-        return "monthly", "history"
-    if n >= 3:
-        qe = sum(1 for (_, m) in months if m in (3, 6, 9, 12))
-        if qe >= max(2, int(0.7 * n)):
-            return "quarterly", "history"
-        if "month" in cf:
-            return "monthly", "canoe"
-        return "quarterly", "history"
-    # 1-2 distinct months in the fund's own last active year
-    if "quarter" in cf:
-        return "quarterly", "canoe"
-    if "month" in cf:
-        return "monthly", "canoe"
-    if all(m == 12 for (_, m) in months):
-        return "annual", "history"
-    return "quarterly", "sparse history"
+    canoe = ("monthly" if "month" in cf else
+             "quarterly" if "quarter" in cf else
+             "annual" if ("annual" in cf or "year" in cf) else None)
+
+    hist = None
+    if dates:
+        anchor = max(dates)
+        horizon = anchor - timedelta(days=365)
+        months = {(d.year, d.month) for d in dates if horizon <= d <= anchor}
+        n = len(months)
+        if n >= 9:
+            hist = "monthly"
+        elif n >= 3:
+            qe = sum(1 for (_, m) in months if m in (3, 6, 9, 12))
+            hist = "quarterly" if qe >= max(2, int(0.7 * n)) else "monthly"
+        elif n >= 1 and all(m == 12 for (_, m) in months):
+            hist = "annual"
+
+    if hist and canoe and hist != canoe:
+        rank = {"monthly": 0, "quarterly": 1, "annual": 2}
+        pick = max(hist, canoe, key=lambda f: rank[f])
+        return pick, f"history says {hist}, canoe says {canoe}; less frequent wins"
+    if hist:
+        return hist, "history"
+    if canoe:
+        return canoe, "canoe"
+    if dates:
+        return "quarterly", "sparse history"
+    return "none", "no statements seen"
 
 
 def seed_schedule(rows: list[dict], path: str) -> list[dict]:
