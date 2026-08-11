@@ -748,7 +748,7 @@ def write_xlsx(path: str, recs: list[dict], dest: str) -> None:
     center = Alignment(horizontal="center")
     index = build_archive_index(dest)
 
-    LEGEND = [(green, "= Received (click the cell to open the statement)"),
+    LEGEND = [(green, "= Received (click \"Link\" to open the statement)"),
               (red, "= Expected, not received in Canoe"),
               (None, "= Not tracked for this period")]
     HDR_ROW = len(LEGEND) + 2          # legend, blank row, then the header row
@@ -789,7 +789,12 @@ def write_xlsx(path: str, recs: list[dict], dest: str) -> None:
                     c.fill = green
                     link = _file_link(rec, index, dest)
                     if link:
+                        # Give the cell display text, otherwise Excel renders
+                        # the raw URL in the cell.
+                        c.value = "Link"
                         c.hyperlink = link
+                        c.font = Font(color="1B5E20", underline="single")
+                        c.alignment = center
                 else:
                     c.fill = red
 
