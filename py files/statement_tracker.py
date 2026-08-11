@@ -254,10 +254,23 @@ def parse_date(s: str | None) -> date | None:
 
 
 def statement_rows(docs: list[dict], types_by_fund: dict) -> list[dict]:
-    """Flatten docs -> one row per (doc, allocation) that is a statement type."""
+    """Flatten docs -> one row per (doc, allocation) that is a statement type.
+
+    Documents whose allocations span more than one investment are excluded:
+    those are consolidated custodian statements (e.g. a Merrill Lynch brokerage
+    statement listing positions in several funds, which Canoe maps to every
+    fund it mentions). They are not statements issued BY the manager, and
+    counting them makes quarterly funds look like monthly reporters.
+    """
+    excluded = 0
     rows = []
     for d in docs:
         dtype = (d.get("document_type") or "").strip()
+        span = {a.get("investment_id") for a in d.get("allocations") or []
+                if isinstance(a, dict) and a.get("investment_id")}
+        if len(span) > 1:
+            excluded += 1
+            continue
         for a in d.get("allocations") or []:
             inv = (a.get("investment") or "").strip()
             if not inv:
@@ -279,6 +292,9 @@ def statement_rows(docs: list[dict], types_by_fund: dict) -> list[dict]:
                 "doc_id": d.get("id"),
                 "doc_name": d.get("name") or "",
             })
+    if excluded:
+        print(f"  excluded    : {excluded} consolidated custodian statements "
+              f"(span multiple investments)")
     return rows
 
 
