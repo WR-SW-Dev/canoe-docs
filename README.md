@@ -220,14 +220,16 @@ In the grid, **green cells hyperlink to the statement file in the archive**
 the top of each sheet explains green / red / blank.
 
 The weekly job runs it automatically after each Monday pull. The team-facing
-grid is deliberately the **only file** in `_statement_tracker/`; everything
-supporting it lives in `backend/`:
+grid is the only workbook at the top of `_statement_tracker/`; everything
+supporting it lives in `backend/`, and prior runs in `Archive/`:
 
 ```
 Canoe/_statement_tracker/
-├── Statement Tracker.xlsx          # THE grid: green = received, red = not; one
-│                                   # sheet per cadence (Monthly / Quarterly / Annual),
-│                                   # one row per fund, one column per period
+├── Statement Tracker <date>.xlsx   # THE grid: green = received (click "Link"),
+│                                   # red = not; one sheet per cadence, one row
+│                                   # per fund (+ entity sub-rows), one column
+│                                   # per period. A NEW dated file each run.
+├── Archive/                        # prior runs, kept for records
 └── backend/
     ├── statement_schedule.xlsx     # EDITABLE config — the expected schedule
     │                               # (dropdowns for frequency/track; "How to use" tab)
@@ -237,6 +239,13 @@ Canoe/_statement_tracker/
     ├── Statement Digest.html       # statements that arrived since the last run
     └── statement_metadata_cache.json  # metadata cache (auto-managed)
 ```
+
+**Why a new dated file each run:** rewriting one workbook in place wedges
+OneDrive's Office-file sync whenever someone has it open in Excel — the update
+then silently never reaches SharePoint. A fresh file is a fresh OneDrive item,
+so the weekly refresh always lands; older runs are swept into `Archive/`.
+(The "Link" cells in archived copies point one folder level off and won't
+resolve — archives keep the color record; use the current file for links.)
 
 **Email digest.** Each run builds `backend/Statement Digest.html` — the
 statements that arrived since the previous run (each document is announced

@@ -86,9 +86,15 @@ Q4_EXTRA_DAYS = 30
 
 SUBDIR = "_statement_tracker"
 BACKEND = "backend"
+ARCHIVE = "Archive"
 SCHEDULE_FILE = "statement_schedule.xlsx"
 CACHE_FILE = "statement_metadata_cache.json"
-GRID_FILE = "Statement Tracker.xlsx"
+# Each run writes a NEW dated workbook ("Statement Tracker 2026-08-11.xlsx")
+# and sweeps older ones into Archive/. A fresh file is a fresh OneDrive item,
+# so an Excel session holding last week's grid open can never block the
+# weekly update from reaching SharePoint (in-place rewrites of an open .xlsx
+# wedge OneDrive's Office-file sync).
+GRID_PREFIX = "Statement Tracker"
 
 
 # --------------------------------------------------------------------------- #
@@ -918,7 +924,7 @@ def build_digest(backend: str, rows: list[dict], recs: list[dict]) -> tuple[str,
  th {{ background: #f6f8fa; }} </style>
 <h2>Canoe statements digest &mdash; {esc(date.today().isoformat())}</h2>
 <p><b>{len(new)}</b> new statement(s) since the last pull &middot; {n_over} period(s) currently overdue.
-See the <i>Statement Tracker.xlsx</i> grid in the Canoe SharePoint library for the full picture.</p>"""]
+See the latest <i>Statement Tracker</i> workbook in the Canoe SharePoint library for the full picture.</p>"""]
     if new:
         body.append("<table><tr><th>Fund</th><th>Entity</th><th>Type</th>"
                     "<th>Period date</th><th>Uploaded</th></tr>")
@@ -984,10 +990,28 @@ def migrate_layout(dest: str, outdir: str, backend: str) -> None:
             print(f"  migrated    : statement_schedule.csv -> {BACKEND}/{SCHEDULE_FILE}")
         os.remove(old_csv)
     # The grid used to live at the archive root; it is regenerated in outdir now.
-    old_grid = os.path.join(dest, GRID_FILE)
+    old_grid = os.path.join(dest, GRID_PREFIX + ".xlsx")
     if os.path.exists(old_grid):
         os.remove(old_grid)
-        print(f"  migrated    : removed old root copy of {GRID_FILE}")
+        print(f"  migrated    : removed old root copy of {GRID_PREFIX}.xlsx")
+
+
+def archive_old_grids(outdir: str, keep_name: str) -> None:
+    """Sweep previous grid workbooks into Archive/ so the folder always shows
+    exactly one current workbook. Collision-safe for same-day reruns."""
+    archive_dir = os.path.join(outdir, ARCHIVE)
+    for f in sorted(os.listdir(outdir)):
+        if not (f.startswith(GRID_PREFIX) and f.endswith(".xlsx")) or f == keep_name:
+            continue
+        os.makedirs(archive_dir, exist_ok=True)
+        target = os.path.join(archive_dir, f)
+        root, ext = os.path.splitext(target)
+        n = 2
+        while os.path.exists(target):
+            target = f"{root}__{n}{ext}"
+            n += 1
+        os.replace(os.path.join(outdir, f), target)
+        print(f"  archived    : {f} -> {ARCHIVE}/{os.path.basename(target)}")
 
 
 # --------------------------------------------------------------------------- #
@@ -1012,7 +1036,7 @@ def main() -> None:
     today = date.today()
 
     print("Statement tracker")
-    print(f"  grid        : {os.path.join(outdir, GRID_FILE)}")
+    print(f"  grid        : {os.path.join(outdir, GRID_PREFIX)} <date>.xlsx")
     print(f"  backend     : {backend}")
     migrate_layout(dest, outdir, backend)
 
@@ -1062,9 +1086,16 @@ def main() -> None:
     write_status_csv(os.path.join(backend, "statement_status.csv"), recs)
     write_received_log(os.path.join(backend, "statement_received_log.csv"), rows)
     write_html(os.path.join(backend, "Statement Tracker.html"), recs, undated, args.periods, generated)
-    # The grid is the team's view -- the only file directly in _statement_tracker/.
-    write_xlsx(os.path.join(outdir, GRID_FILE), recs, dest)
-    print(f"  wrote       : {GRID_FILE} + backend detail (html, csvs)")
+    # The grid is the team's view -- a fresh dated workbook each run, with
+    # prior runs swept into Archive/ (never rewritten in place; see GRID_PREFIX).
+    grid_name = f"{GRID_PREFIX} {today.isoformat()}.xlsx"
+    # Same-day rerun: remove today's file first so it isn't archived as a dupe.
+    same_day = os.path.join(outdir, grid_name)
+    if os.path.exists(same_day):
+        os.remove(same_day)
+    archive_old_grids(outdir, keep_name=grid_name)
+    write_xlsx(same_day, recs, dest)
+    print(f"  wrote       : {grid_name} + backend detail (html, csvs)")
 
     digest_html, new_rows = build_digest(backend, rows, recs)
     with open(os.path.join(backend, "Statement Digest.html"), "w") as f:
