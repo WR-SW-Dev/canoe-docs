@@ -240,7 +240,9 @@ Canoe/_statement_tracker/
 
 **Email digest.** Each run builds `backend/Statement Digest.html` — the
 statements that arrived since the previous run (each document is announced
-exactly once). To have it emailed, add SMTP settings to `py files/.env`:
+exactly once). To have it emailed, run `python setup.py` (safe to re-run —
+existing values are kept when you press Enter) and fill in the digest prompts,
+or add the SMTP settings to `py files/.env` by hand:
 
 ```bash
 CANOE_DIGEST_TO=ops@wakerobin.co,jbyrne@wakerobin.co
