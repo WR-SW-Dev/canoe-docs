@@ -24,7 +24,10 @@ python3 -m venv "$BASE/.venv"
 "$BASE/.venv/bin/pip" install -q -r "$BASE/requirements.txt"
 echo "  venv ready: $BASE/.venv"
 
-mkdir -p "$HOME/Library/LaunchAgents" "$BASE/logs"
+# Runtime state (manifest, logs, last-run) lives on LOCAL disk, not in the repo.
+DATA_DIR="${CANOE_DATA_DIR:-$HOME/Library/Application Support/canoe-sync}"
+mkdir -p "$HOME/Library/LaunchAgents" "$DATA_DIR/logs"
+echo "  data dir  : $DATA_DIR"
 PLIST="$HOME/Library/LaunchAgents/co.wakerobin.canoe.sync.plist"
 cat > "$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -44,8 +47,8 @@ cat > "$PLIST" <<EOF
         <key>Hour</key><integer>7</integer>
         <key>Minute</key><integer>0</integer>
     </dict>
-    <key>StandardOutPath</key><string>$BASE/logs/launchd.out.log</string>
-    <key>StandardErrorPath</key><string>$BASE/logs/launchd.err.log</string>
+    <key>StandardOutPath</key><string>$DATA_DIR/logs/launchd.out.log</string>
+    <key>StandardErrorPath</key><string>$DATA_DIR/logs/launchd.err.log</string>
     <key>RunAtLoad</key><false/>
 </dict>
 </plist>

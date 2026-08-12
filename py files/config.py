@@ -35,6 +35,10 @@ import subprocess
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 KEYCHAIN_SERVICE = "canoe-app"
 
+# Runtime state (manifest, logs, last-run) MUST live on local disk, never in the repo
+# (which may sit in a synced folder). Default to the macOS per-user app-data location.
+DEFAULT_DATA_DIR = os.path.join(os.path.expanduser("~"), "Library", "Application Support", "canoe-sync")
+
 
 class ConfigError(RuntimeError):
     pass
@@ -91,9 +95,18 @@ def sharepoint() -> dict:
     }
 
 
+def data_dir() -> str:
+    """Local, non-synced base dir for all runtime state (never the repo/OneDrive)."""
+    return get("CANOE_DATA_DIR", default=DEFAULT_DATA_DIR)
+
+
 def manifest_path() -> str:
-    return get("CANOE_MANIFEST_PATH", default=os.path.join(REPO_ROOT, ".state", "manifest.json"))
+    return get("CANOE_MANIFEST_PATH", default=os.path.join(data_dir(), "manifest.json"))
 
 
 def log_dir() -> str:
-    return get("CANOE_LOG_DIR", default=os.path.join(REPO_ROOT, "logs"))
+    return get("CANOE_LOG_DIR", default=os.path.join(data_dir(), "logs"))
+
+
+def state_path() -> str:
+    return get("CANOE_STATE_PATH", default=os.path.join(data_dir(), "last_sync.json"))

@@ -62,12 +62,8 @@ def setup_logging(log_dir: str) -> str:
 
 
 # -- state (incremental window) ------------------------------------------------
-def state_path() -> str:
-    return os.path.join(config.REPO_ROOT, ".state", "last_sync.json")
-
-
 def load_since() -> str | None:
-    p = state_path()
+    p = config.state_path()
     if os.path.exists(p):
         try:
             return json.load(open(p)).get("last_run_iso")
@@ -77,7 +73,7 @@ def load_since() -> str | None:
 
 
 def save_since(iso: str) -> None:
-    p = state_path()
+    p = config.state_path()
     os.makedirs(os.path.dirname(p), exist_ok=True)
     json.dump({"last_run_iso": iso}, open(p, "w"), indent=2)
 

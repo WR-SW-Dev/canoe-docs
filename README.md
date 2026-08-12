@@ -60,8 +60,10 @@ in the **macOS Keychain** by `setup.py` and exported into the environment by
 | `CANOE_CLIENT_ID` / `CANOE_CLIENT_SECRET` | Canoe API service-client credentials | Canoe → Settings → API Configuration |
 | `CANOE_USERNAME` / `CANOE_PASSWORD` | Canoe fallback (password-grant) auth | Canoe service account (optional) |
 | `CANOE_ORGANIZATION_ID` | Canoe org id | only if the login has multiple orgs (optional) |
-| `CANOE_MANIFEST_PATH` | Manifest location | optional; default `‹repo›/.state/manifest.json` |
-| `CANOE_LOG_DIR` | Log directory | optional; default `‹repo›/logs` |
+| `CANOE_DATA_DIR` | Local dir for all runtime state | optional; default `~/Library/Application Support/canoe-sync` |
+| `CANOE_MANIFEST_PATH` | Manifest location | optional; default `‹CANOE_DATA_DIR›/manifest.json` |
+| `CANOE_LOG_DIR` | Log directory | optional; default `‹CANOE_DATA_DIR›/logs` |
+| `CANOE_STATE_PATH` | Incremental last-run marker | optional; default `‹CANOE_DATA_DIR›/last_sync.json` |
 
 The certificate **private key itself is a file on the App Server**, not a config value —
 only its path is configured. Keep it `chmod 600` and outside the repo.
@@ -80,10 +82,13 @@ only its path is configured. Keep it `chmod 600` and outside the repo.
 - The **Canoe API** service-client credentials.
 
 ### Steps
-1. **Clone the repo:**
+1. **Clone the repo to a LOCAL path — not inside OneDrive or any synced folder** (e.g. a
+   service-account home or `/usr/local/canoe-sync`):
    ```bash
-   git clone git@github.com:WR-SW-Dev/canoe-docs.git && cd canoe-docs
+   git clone git@github.com:WR-SW-Dev/canoe-docs.git ~/canoe-sync && cd ~/canoe-sync
    ```
+   Both the code and its runtime state must live on local disk. Runtime state defaults to
+   `~/Library/Application Support/canoe-sync`; keep the checkout out of OneDrive too.
 2. **Place the certificate private key** on the machine (e.g. `~/secrets/canoe-graph.pem`),
    readable only by this user (`chmod 600`). Note its absolute path.
 3. **Run the installer** (creates the virtualenv, installs dependencies, generates the
@@ -132,12 +137,17 @@ exports it to the environment, and runs `canoe_sync.py`.
 
 ## Logs and state
 
-- **Per-run log:** `logs/canoe_sync_YYYY-MM-DD.log` — documents fetched / skipped /
+All runtime state lives under **`CANOE_DATA_DIR`** (default
+`~/Library/Application Support/canoe-sync`), on **local disk — never in the repo or a
+synced/OneDrive folder**, so the idempotency manifest cannot be corrupted by a sync client.
+
+- **Per-run log:** `‹data›/logs/canoe_sync_YYYY-MM-DD.log` — documents fetched / skipped /
   uploaded, and any errors with the document id. This is the file to read after a run.
-- **Wrapper log:** `logs/run_sync.log` — start/finish and exit code of each scheduled run.
-- **launchd stdout/stderr:** `logs/launchd.out.log`, `logs/launchd.err.log`.
-- **Manifest:** `.state/manifest.json` — the idempotency record (Canoe doc id →
-  uploaded path). Local to the machine; not committed.
+- **Wrapper log:** `‹data›/logs/run_sync.log` — start/finish and exit code of each scheduled run.
+- **launchd stdout/stderr:** `‹data›/logs/launchd.out.log`, `‹data›/logs/launchd.err.log`.
+- **Manifest:** `‹data›/manifest.json` — the idempotency record (Canoe doc id →
+  uploaded path). Must stay on local disk, out of any synced folder.
+- **Last-run marker:** `‹data›/last_sync.json` — the incremental window.
 
 A non-zero exit code from `canoe_sync.py` means at least one document failed — the log
 names each failure with its document id.
