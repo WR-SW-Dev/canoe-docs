@@ -121,3 +121,17 @@ def log_dir() -> str:
 
 def state_path() -> str:
     return get("CANOE_STATE_PATH", default=os.path.join(data_dir(), "last_sync.json"))
+
+
+def runs_path() -> str:
+    """Structured run-history log (one JSON object per line), read by the dashboard.
+
+    Replaces the old manually-maintained run_history.csv. Lives on local disk with the
+    rest of the runtime state, never in the repo or a synced folder.
+    """
+    return get("CANOE_RUNS_PATH", default=os.path.join(data_dir(), "runs.jsonl"))
+
+
+def resync_status_path() -> str:
+    """Small JSON status file the dashboard writes when it launches a --full resync."""
+    return get("CANOE_RESYNC_STATUS_PATH", default=os.path.join(data_dir(), "resync_status.json"))

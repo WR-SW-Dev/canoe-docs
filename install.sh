@@ -73,4 +73,8 @@ Install steps complete. Remaining manual steps:
      Test it immediately (optional):
        launchctl start co.wakerobin.canoe.sync && tail -30 "$BASE/logs/run_sync.log"
 
+  5. (Optional) Launch the local admin dashboard (manifest / runs / reconcile / resync),
+     bound to 127.0.0.1 only:
+       "$BASE/run_dashboard.sh"     # then open http://127.0.0.1:8765
+
 NEXT

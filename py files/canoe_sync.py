@@ -79,6 +79,22 @@ def save_since(iso: str) -> None:
     json.dump({"last_run_iso": iso}, open(p, "w"), indent=2)
 
 
+def append_run_record(record: dict) -> None:
+    """Append one run's summary to the structured run-history log (JSON lines).
+
+    This is the single source for the dashboard's run-history view, replacing the old
+    hand-maintained run_history.csv. One line per real sync run; append-only so history
+    accumulates. Never fatal -- a logging failure must not fail the sync itself.
+    """
+    try:
+        p = config.runs_path()
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "a") as f:
+            f.write(json.dumps(record) + "\n")
+    except Exception as exc:  # noqa: BLE001 -- run-history is best-effort telemetry
+        logging.warning("Could not write run-history record: %s", exc)
+
+
 # -- Canoe discovery + download ------------------------------------------------
 def _canoe_get(url: str, params: dict | None = None, timeout: int = 180) -> requests.Response:
     """GET the Canoe API, honouring Retry-After on 429/503 and retrying transient 5xx."""
@@ -346,6 +362,33 @@ def main() -> None:
     # Advance the shared incremental marker only for a real Graph run (not local/dry).
     if not args.dry_run and not local_dest and errors == 0:
         save_since(run_start.isoformat())
+
+    run_end = datetime.now(timezone.utc)
+    if args.dry_run:
+        mode = "dry-run"
+    elif local_dest:
+        mode = "local"
+    elif args.full or (args.since is None and since_date is None):
+        mode = "full"
+    else:
+        mode = "incremental"
+    # A real Graph run appends to the shared run-history log; local/dry runs do not touch
+    # the SharePoint source of truth, so they are not recorded there.
+    if not args.dry_run and not local_dest:
+        append_run_record({
+            "run_start": run_start.isoformat(),
+            "run_end": run_end.isoformat(),
+            "duration_sec": round((run_end - run_start).total_seconds(), 1),
+            "mode": mode,
+            "since": since_date,
+            "fetched": len(records),
+            "uploaded": uploaded,
+            "skipped": skipped,
+            "errors": errors,
+            "manifest_total": manifest.count(),
+            "exit_code": 1 if errors else 0,
+            "log_file": os.path.basename(log_path),
+        })
 
     logging.info(
         "=== done: fetched=%d skipped=%d uploaded=%d errors=%d manifest_total=%d ===",

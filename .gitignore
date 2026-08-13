@@ -39,7 +39,8 @@ _route_*.json
 _route_*.csv
 _download_activity*.csv
 
-# NOTE: run_history.csv is intentionally NOT ignored — it holds run timestamps + counts only (no file names).
+# NOTE: run history is no longer a repo CSV. Each real sync appends a structured record to
+# runs.jsonl under CANOE_DATA_DIR (local disk, outside the repo); the dashboard reads it.
 
 # ---- macOS / editors ----
 .DS_Store

@@ -3,3 +3,4 @@ pymupdf>=1.26
 openpyxl>=3.1
 msal>=1.28
 cryptography>=42.0
+flask>=3.0

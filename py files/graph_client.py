@@ -157,6 +157,40 @@ class GraphClient:
                 url = data.get("@odata.nextLink")
         return results
 
+    @property
+    def root_folder(self) -> str:
+        return self._root_folder
+
+    def rename_root_folder(self, new_name: str) -> str:
+        """Rename the configured root folder in place (e.g. Canoe -> Canoe_archive_2026-08-13).
+
+        Used by the dashboard's "resync" action to archive the current library contents
+        before a fresh full sync: an in-place PATCH on the folder's driveItem keeps every
+        file under the renamed folder (no copy, no re-upload). The next sync recreates the
+        original root and writes into it. Returns the new folder name.
+
+        Raises GraphError if no root folder is configured (writing at the drive root cannot
+        be renamed) or if the folder does not exist.
+        """
+        root = self._root_folder
+        if not root:
+            raise GraphError("No SP_ROOT_FOLDER configured; refusing to rename the drive root.")
+        new_name = new_name.strip().strip("/")
+        if not new_name or "/" in new_name:
+            raise GraphError(f"Invalid new folder name: {new_name!r}")
+        drive = self.drive_id()
+        r = self._request(
+            "PATCH", f"{GRAPH}/drives/{drive}/root:/{root}:",
+            headers={"Content-Type": "application/json"},
+            json={"name": new_name},
+        )
+        if r.status_code == 404:
+            raise GraphError(f"Root folder '{root}' not found; nothing to archive.")
+        if r.status_code not in (200, 201):
+            raise GraphError(f"Rename of '{root}' -> '{new_name}' failed: {r.status_code} {r.text[:200]}")
+        self._ensured.clear()  # cached folder-existence assumptions no longer hold
+        return new_name
+
     # -- folders ------------------------------------------------------------
     def ensure_folder(self, rel_folder: str) -> None:
         """Create nested folders under the configured root folder if absent."""

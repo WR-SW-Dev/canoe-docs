@@ -122,6 +122,86 @@ only its path is configured. Keep it `chmod 600` and outside the repo.
 
 ---
 
+## First-run migration (when the library already has documents)
+
+If the SharePoint library was **already populated** (e.g. an existing archive copied in
+by hand), do **not** let the first sync re-upload everything. Seed the manifest so the
+sync knows those documents are already present, then reconcile against the live library
+to catch any gap. Two steps:
+
+1. **Seed** the manifest + last-run marker from a full Canoe discovery (no upload):
+   ```bash
+   cd "py files"
+   ../.venv/bin/python canoe_sync.py --seed --seed-out ~/canoe-seed
+   ```
+   Copy the resulting `manifest.json` and `last_sync.json` into `CANOE_DATA_DIR`
+   (default `~/Library/Application Support/canoe-sync`). The next sync will now **skip**
+   every document already recorded, and only pick up genuinely new ones.
+
+   > The seed marks all discovered documents as present. That is accurate **only if the
+   > existing copy is complete through the seed time.** Anything uploaded to Canoe after
+   > the copy was taken but before the seed would be in the manifest yet possibly not in
+   > SharePoint — which the next step catches.
+
+2. **Reconcile** against the live library once Graph is configured, to verify the seed
+   and surface anything missing:
+   ```bash
+   ../.venv/bin/python canoe_sync.py --export live_inventory.csv
+   ```
+   or use the dashboard's **Reconcile** view. Either lists what is *actually* in
+   SharePoint (via Graph) and flags any manifest entry as `MISSING_IN_SHAREPOINT`. Remove
+   those doc ids from the manifest (or just run a normal sync) so they get uploaded.
+
+After that, the weekly incremental sync carries on from `last_sync.json` as usual.
+
+---
+
+## Admin dashboard
+
+A lightweight **local** dashboard so nobody has to read JSON or log files to see the
+sync's state. It reads the same runtime state the sync writes (`manifest.json`,
+`runs.jsonl`) and talks to Graph for live verification.
+
+```bash
+./run_dashboard.sh          # loads secrets -> env, serves on http://127.0.0.1:8765
+```
+
+It binds to **localhost only** — it can trigger a full resync, so it must not be exposed
+on the network. To reach it from another machine, SSH-tunnel to the App Server:
+```bash
+ssh -L 8765:127.0.0.1:8765 «app-server»    # then open http://127.0.0.1:8765 locally
+```
+
+Four views:
+
+| View | What it shows |
+|---|---|
+| **Manifest** | Searchable/filterable table of `manifest.json` — doc id, destination path, uploaded-at, size. The source of truth for "what's been synced". |
+| **Run history** | Recent runs from `runs.jsonl` — mode (full/incremental), fetched/uploaded/skipped/error counts, duration, result. Structured, not scraped from log lines. |
+| **Reconcile** | Lists what is *actually* in SharePoint (live Graph crawl) and compares it to the manifest: flags entries recorded as uploaded but **missing in SharePoint**, and files present in the library but **absent from the manifest**. This is the verification underneath the manifest — don't trust the manifest blindly. |
+| **Resync** | A guarded action (below). |
+
+### The Resync action
+
+Behind a typed confirmation, **Resync** does a clean full rebuild of the library:
+
+1. **Archives** the current SharePoint root folder in place — an in-place Graph rename to
+   `‹root›_archive_‹YYYY-MM-DD›`. Nothing is deleted; every existing file moves under the
+   archived name.
+2. **Clears** `manifest.json` and `last_sync.json`.
+3. **Launches** `canoe_sync.py --full` in the background and shows **live status**
+   (documents uploaded so far, elapsed time, a tail of the run log), refreshing while it
+   runs.
+
+A full rebuild re-downloads and re-uploads every document; at Canoe's ~60 calls/min rate
+limit a full library (~9,800 docs) takes **a few hours**. The confirmation guard is there
+because this is a real, consequential action — not a casual toggle.
+
+The dashboard needs the Graph configuration for **Reconcile** and **Resync**; the
+**Manifest** and **Run history** views work without it.
+
+---
+
 ## The weekly schedule
 
 `install.sh` writes a `launchd` job at
@@ -154,9 +234,23 @@ synced/OneDrive folder**, so the idempotency manifest cannot be corrupted by a s
 - **Manifest:** `‹data›/manifest.json` — the idempotency record (Canoe doc id →
   uploaded path). Must stay on local disk, out of any synced folder.
 - **Last-run marker:** `‹data›/last_sync.json` — the incremental window.
+- **Run history:** `‹data›/runs.jsonl` — one structured JSON record per real sync run
+  (start/end, mode, fetched/uploaded/skipped/error counts, duration, exit code). Written
+  automatically by each run; read by the dashboard's **Run history** view. This replaces
+  the old hand-maintained `run_history.csv`.
 
 A non-zero exit code from `canoe_sync.py` means at least one document failed — the log
 names each failure with its document id.
+
+### One source of truth
+
+"What's been synced" has exactly one authority: **`manifest.json`** (Canoe doc id →
+uploaded path), **verified against what is actually in SharePoint** via a live Graph
+listing (`--export`, or the dashboard's **Reconcile** view). There is deliberately **no
+parallel spreadsheet or local-filesystem/OneDrive-mirror scan** — those drift from the
+live site (a mirror once listed a document as present that was not actually there). If
+you want to know whether a document is in the library, ask the manifest and reconcile it
+against Graph; do not scan a folder.
 
 ---
 
@@ -167,11 +261,13 @@ canoe-docs/
 ├── install.sh                # Installer: venv + deps + launchd job
 ├── setup.py                  # Credential wizard: prompts -> secrets file, validates Graph
 ├── run_sync.sh               # What the scheduler runs weekly (secrets file -> env -> canoe_sync)
+├── run_dashboard.sh          # Launch the local admin dashboard (secrets file -> env -> dashboard)
 ├── .env.example              # Every config key, empty (reference only)
 ├── requirements.txt
 └── py files/
     ├── canoe_sync.py         # The sync pipeline (discover -> download -> upload -> manifest)
     ├── graph_client.py       # Microsoft Graph client: MSAL cert auth + chunked upload + backoff
+    ├── dashboard.py          # Local admin dashboard (manifest / runs / reconcile / resync)
     ├── config.py             # Reads all configuration from the environment
     ├── manifest.py           # Idempotency record, keyed on the Canoe document id
     ├── canoe_auth.py         # Canoe API OAuth (client-credentials / password fallback)
