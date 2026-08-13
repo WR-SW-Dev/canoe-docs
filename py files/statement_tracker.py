@@ -1068,12 +1068,12 @@ def migrate_layout(dest: str, outdir: str, backend: str) -> None:
         print(f"  migrated    : removed old root copy of {GRID_PREFIX}.xlsx")
 
 
-def archive_old_grids(outdir: str, keep_name: str) -> None:
-    """Sweep previous grid workbooks into Archive/ so the folder always shows
-    exactly one current workbook. Collision-safe for same-day reruns."""
+def archive_old_grids(outdir: str) -> None:
+    """Sweep ALL previous grid workbooks into Archive/ so the folder always
+    shows exactly one current workbook. Collision-safe."""
     archive_dir = os.path.join(outdir, ARCHIVE)
     for f in sorted(os.listdir(outdir)):
-        if not (f.startswith(GRID_PREFIX) and f.endswith(".xlsx")) or f == keep_name:
+        if not (f.startswith(GRID_PREFIX) and f.endswith(".xlsx")):
             continue
         os.makedirs(archive_dir, exist_ok=True)
         target = os.path.join(archive_dir, f)
@@ -1159,15 +1159,17 @@ def main() -> None:
     write_status_csv(os.path.join(backend, "statement_status.csv"), recs)
     write_received_log(os.path.join(backend, "statement_received_log.csv"), rows)
     write_html(os.path.join(backend, "Statement Tracker.html"), recs, undated, args.periods, generated)
-    # The grid is the team's view -- a fresh dated workbook each run, with
-    # prior runs swept into Archive/ (never rewritten in place; see GRID_PREFIX).
-    grid_name = f"{GRID_PREFIX} {today.isoformat()}.xlsx"
-    # Same-day rerun: remove today's file first so it isn't archived as a dupe.
-    same_day = os.path.join(outdir, grid_name)
-    if os.path.exists(same_day):
-        os.remove(same_day)
-    archive_old_grids(outdir, keep_name=grid_name)
-    write_xlsx(same_day, recs, dest)
+    # The grid is the team's view -- EVERY run writes a brand-new workbook and
+    # archives the previous one, same-day reruns included. A reused filename is
+    # a reused OneDrive item, and rewriting an item someone has open in Excel
+    # wedges its sync; a fresh name always uploads.
+    archive_old_grids(outdir)
+    base = f"{GRID_PREFIX} {today.isoformat()}"
+    archive_dir = os.path.join(outdir, ARCHIVE)
+    prior_today = sum(1 for f in os.listdir(archive_dir) if f.startswith(base)) \
+        if os.path.isdir(archive_dir) else 0
+    grid_name = f"{base}.xlsx" if prior_today == 0 else f"{base} ({prior_today + 1}).xlsx"
+    write_xlsx(os.path.join(outdir, grid_name), recs, dest)
     print(f"  wrote       : {grid_name} + backend detail (html, csvs)")
 
     digest_html, new_rows = build_digest(backend, rows, recs)
