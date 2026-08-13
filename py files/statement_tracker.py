@@ -292,7 +292,7 @@ def statement_rows(docs: list[dict], types_by_fund: dict,
             continue
         for a in d.get("allocations") or []:
             inv = (a.get("investment") or "").strip()
-            if not inv:
+            if not inv or inv.lower() in IGNORED_INVESTMENTS:
                 continue
             allowed = types_by_fund.get(inv, DEFAULT_STATEMENT_TYPES)
             ds_type = (a.get("dataset_type") or "").strip()
@@ -557,6 +557,11 @@ def sync_new_funds(sched: list[dict], rows: list[dict], path: str) -> list[dict]
 # Reconciliation
 # --------------------------------------------------------------------------- #
 
+# Canoe's couldn't-identify buckets are not funds -- never track them. The
+# documents in them need fixing in Canoe (see canoe_reclassify.py for the
+# local-parse assist); until then they'd only add meaningless grid rows.
+IGNORED_INVESTMENTS = {"unknown", "unknown investment"}
+
 # Types that are entity-specific by nature: each investing entity gets its own.
 # Only these can satisfy an ENTITY sub-row or trigger the amber re-tag flag --
 # quarterly reports, financials etc. are addressed to all LPs, carry no entity,
@@ -595,6 +600,8 @@ def reconcile(sched: list[dict], rows: list[dict], today: date) -> list[dict]:
     out = []
     for s in sched:
         if (s.get("track") or "").strip().lower() not in ("yes", "y", "true", "1"):
+            continue
+        if s["investment"].strip().lower() in IGNORED_INVESTMENTS:
             continue
         freq = (s.get("frequency") or "").strip().lower()
         if freq not in ("monthly", "quarterly", "annual"):
