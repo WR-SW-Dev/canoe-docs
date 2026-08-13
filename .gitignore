@@ -45,3 +45,4 @@ _download_activity*.csv
 .DS_Store
 .idea/
 .vscode/
+_valuations/

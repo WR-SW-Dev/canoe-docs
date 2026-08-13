@@ -2,32 +2,36 @@
 """
 canoe_valuations.py -- Canoe valuation feed, Phase 1 (read-only, standalone)
 ============================================================================
-Pulls Canoe's *extracted* statement NAVs and turns them into two vetted tables:
+Pulls Canoe's *extracted & validated* statement figures and turns them into two
+vetted tables:
 
-  canoe_valuations.csv            -- accepted NAV-by-investment x entity x period
+  canoe_valuations.csv            -- accepted NAV per investment x entity x period
   canoe_validation_exceptions.csv -- everything quarantined, with the reason
 
-This is the valuation analog of the statement tracker: same Canoe auth and the
-same `GET /v1/documents/data` pull quirks, but it keeps the allocation *values*
-(the tracker's _slim throws them away). It reads only Canoe's API-extracted
-figures -- no local PDF parsing, no GenAI.
+WHERE THE DATA LIVES (learned from the API + live probing, 2026-08-13):
+  * The NAV is `validated_data.endingBalance` on **Account Statement** documents
+    (Capital Activity). It is present for BOTH hedge_fund and drawdown_fund (PE)
+    statements -- `endingBalance` was in all 163/163 allocations sampled.
+  * `validated_data` is EMPTY unless you request it: use
+    `fields=allocation_id,validated_data` + `sum_values=true`.
+  * The Addepar/Archway crosswalk is already inside Canoe: the allocation carries
+    `addepar_owner_id`, `addepar_owned_id`, `archway_identifier` -- so we join by
+    ID, not by name. (~98% populated; the null tail falls back to archway_identifier
+    / entity name.)
+  * QUIRK: a long `fields` list silently truncates `validated_data` to just
+    `entity`. So we fetch figures and IDs in TWO calls per window and join on
+    `allocation_id`. And `/v1/documents/data` ignores `limit` and times out on
+    multi-year spans -> we window by month (like canoe_downloader).
 
-Framing risk (Jason): "errant tags and incorrect numbers pulled from docs." So
-every NAV must clear the validation gates below or it lands on the exceptions
-list -- never silently trusted. Three-way Canoe|Archway|Addepar cross-checking
-is Phase 2 (in the recon); Phase 1 proves extraction quality on real data.
+No PDF parsing, no GenAI -- this reads Canoe's own validated API data.
 
-FIRST RUN -- confirm the NAV field name on a machine that has Canoe creds:
-    python3 canoe_valuations.py --probe
-It dumps the raw allocation keys + a sample so we can pin the NAV field. The
-pipeline auto-detects it from NAV_FIELD_CANDIDATES meanwhile.
-
-    python3 canoe_valuations.py            # full pull -> the two CSVs
-    python3 canoe_valuations.py --refresh full
+    python3 canoe_valuations.py --start 2024-01 --end 2024-06
+    python3 canoe_valuations.py --probe            # dump validated_data field names
 """
 from __future__ import annotations
 
 import argparse
+import calendar
 import csv
 import datetime as dt
 import json
@@ -37,99 +41,106 @@ import time
 from collections import defaultdict
 
 import requests
-import canoe_auth   # reused: OAuth + get_auth_headers()
+import canoe_auth
 
-# --- constants (mirror statement_tracker.py conventions) ------------------- #
-DATA_URL = "https://api.canoesoftware.com/v1/documents/data"
-PAGE_LIMIT = 100
+BASE = "https://api.canoesoftware.com"
+DATA_URL = BASE + "/v1/documents/data"
+DOC_TYPE = "Account Statement"          # the type carrying validated_data figures
 MAX_RETRIES = 5
-STATEMENT_TYPE_NAMES = [
-    "Account Statement", "Capital Account Statement", "Monthly Report",
-    "Quarterly Report", "Annual Report", "Financials",
-]
-# Statuses a person must review before the figure can be trusted.
+# NAV field inside validated_data. endingBalance is universal; the rest are
+# safety fallbacks for templates that ever omit it.
+NAV_FIELDS = ["endingBalance", "endingBalanceQTD", "endingBalanceYTD", "netAssetValue"]
+# Extra figures worth carrying (cash-flow cross-checks / context).
+EXTRA_FIELDS = ["paidInCapital", "contribution", "distribution", "cumulativeDistribution",
+                "commitment", "unfundedCommitment", "navPerShare", "irr", "moic"]
 REVIEW_STATUSES = {"awaiting confirmation", "anomaly detected", "potential discrepancy"}
-# Prefer a capital account statement's NAV over a report's, etc.
-TYPE_PRIORITY = {
-    "capital account statement": 0, "account statement": 1, "monthly report": 2,
-    "quarterly report": 3, "annual report": 4, "financials": 5,
-}
-# Canoe's NAV/ending-capital field name varies by tenant; take the first present.
-# Confirm the real one with --probe and move it to the front.
-NAV_FIELD_CANDIDATES = [
-    "reporting_value", "ending_capital_balance", "ending_capital", "market_value",
-    "ending_market_value", "nav", "net_asset_value", "current_value",
-    "ending_value", "capital_balance", "value",
-]
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_valuations")
 
 
 # --------------------------------------------------------------------------- #
-# Pull (defensive pagination; NEVER pass `fields=` -> it empties allocations)
+# Pull
 # --------------------------------------------------------------------------- #
-def _fetch_page(page: int, extra: dict) -> requests.Response:
-    params = {"page": page, "limit": PAGE_LIMIT, **extra}
+def _get(params):
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            resp = requests.get(DATA_URL, headers=canoe_auth.get_auth_headers(),
-                                params=params, timeout=600)
-        except requests.exceptions.RequestException as exc:
-            time.sleep(15 * attempt)
+            r = requests.get(DATA_URL, headers=canoe_auth.get_auth_headers(),
+                             params=params, timeout=120)
+        except requests.exceptions.RequestException:
+            time.sleep(10 * attempt)
             if attempt == MAX_RETRIES:
                 raise
             continue
-        if resp.status_code in (429, 500, 502, 503, 504):
-            time.sleep(30 * attempt)
+        if r.status_code in (429, 500, 502, 503, 504):
+            time.sleep(20 * attempt)
             continue
-        resp.raise_for_status()
-        return resp
-    raise RuntimeError(f"page {page} failed after {MAX_RETRIES} attempts")
+        r.raise_for_status()
+        rem = r.headers.get("X-RateLimit-Remaining")
+        if rem is not None and int(rem) <= 3:
+            time.sleep(30)
+        return r.json()
+    raise RuntimeError("request failed after retries")
 
 
-def pull_docs(max_pages: int = 200) -> list[dict]:
-    """All statement-type docs, full allocations kept. Dedupe by id."""
-    types_param = ",".join(sorted(STATEMENT_TYPE_NAMES))
-    by_id: dict[str, dict] = {}
-    page = 1
-    while page <= max_pages:
-        resp = _fetch_page(page, {"document_type": types_param})
-        batch = resp.json()
-        if not isinstance(batch, list) or not batch:
-            break
-        before = len(by_id)
-        for d in batch:
-            if d.get("id"):
-                by_id[d["id"]] = d
-        tp = resp.headers.get("total_pages")
-        print(f"  page {page}{'/'+tp if tp else ''}: total {len(by_id)}")
-        if len(by_id) == before or (tp and page >= int(tp)):
-            break
-        page += 1
-    return list(by_id.values())
+def _allocs(docs, extra_doc_fields=()):
+    """Flatten allocations -> {allocation_id: allocation-dict (+ carried doc fields)}."""
+    out = {}
+    for d in docs:
+        carried = {f: d.get(f) for f in extra_doc_fields}
+        for a in (d.get("allocations") or []):
+            for x in ([a] if isinstance(a, dict) else a):
+                if isinstance(x, dict) and x.get("allocation_id"):
+                    x = {**x, **carried}
+                    out[x["allocation_id"]] = x
+    return out
 
 
-def _flatten_allocations(doc: dict) -> list[dict]:
-    raw = doc.get("allocations") or []
-    flat = []
-    for a in raw:
-        if isinstance(a, list):
-            flat.extend(x for x in a if isinstance(x, dict))
-        elif isinstance(a, dict):
-            flat.append(a)
-    return flat
+def pull_window(date_start, date_end):
+    """Two calls (figures + ids) for a data_date window, joined on allocation_id.
+    Returns a list of merged allocation dicts."""
+    common = {"document_type": DOC_TYPE, "data_date_start": date_start,
+              "data_date_end": date_end, "sum_values": "true"}
+    figures = _allocs(_get({**common, "fields": "allocation_id,validated_data"}))
+    ids = _allocs(_get({**common, "fields":
+              "allocation_id,investment,investment_id,investment_structure,"
+              "addepar_owner_id,addepar_cash_owner_id,addepar_owned_id,"
+              "archway_identifier,document_status,name"}),
+              extra_doc_fields=())
+    merged = []
+    for aid, fig in figures.items():
+        idrec = ids.get(aid, {})
+        merged.append({**idrec, "allocation_id": aid,
+                       "validated_data": fig.get("validated_data") or {}})
+    return merged
+
+
+def month_windows(start_ym, end_ym):
+    y, m = map(int, start_ym.split("-"))
+    ey, em = map(int, end_ym.split("-"))
+    while (y, m) <= (ey, em):
+        last = calendar.monthrange(y, m)[1]
+        yield f"{y:04d}-{m:02d}-01", f"{y:04d}-{m:02d}-{last:02d}"
+        m += 1
+        if m > 12:
+            m, y = 1, y + 1
 
 
 # --------------------------------------------------------------------------- #
-# Helpers
+# Extract + validate
 # --------------------------------------------------------------------------- #
-def detect_nav(alloc: dict):
-    """(field_name, float value) using the first present candidate, or (None, None)."""
-    for k in NAV_FIELD_CANDIDATES:
-        if k in alloc and alloc[k] not in (None, ""):
-            try:
-                return k, float(str(alloc[k]).replace(",", "").replace("$", ""))
-            except (TypeError, ValueError):
-                continue
+def _num(v):
+    if v in (None, ""):
+        return None
+    try:
+        return float(str(v).replace(",", "").replace("$", ""))
+    except (TypeError, ValueError):
+        return None
+
+
+def detect_nav(vd):
+    for k in NAV_FIELDS:
+        v = _num(vd.get(k))
+        if v is not None:
+            return k, v
     return None, None
 
 
@@ -145,133 +156,118 @@ def parse_date(s):
     return None
 
 
-def period_key(d: dt.date) -> str:
-    return d.strftime("%Y-%m") if d else ""
-
-
-# --------------------------------------------------------------------------- #
-# Validation pipeline (the crux)
-# --------------------------------------------------------------------------- #
-def build_valuations(docs: list[dict], jump_pct: float = 0.5):
-    """Return (accepted rows, exception rows). Pure function -- unit-testable
-    with synthetic docs, no network."""
+def build_valuations(allocs, jump_pct=0.5):
+    """Pure function: merged allocation dicts -> (accepted, exceptions)."""
     accepted, exceptions = [], []
 
-    def exc(reason, doc, alloc, nav=None, period=None):
+    def exc(reason, a, nav=None, per=None):
+        vd = a.get("validated_data") or {}
         exceptions.append({
-            "reason": reason, "doc_id": doc.get("id"), "doc_name": doc.get("name"),
-            "document_type": doc.get("document_type"),
-            "document_status": doc.get("document_status"),
-            "investment": (alloc or {}).get("investment"),
-            "investment_id": (alloc or {}).get("investment_id"),
-            "entity": (alloc or {}).get("entity"),
-            "period": period, "nav": nav,
+            "reason": reason, "allocation_id": a.get("allocation_id"),
+            "fund": vd.get("fundName") or a.get("investment"),
+            "entity": vd.get("entity"),
+            "addepar_owned_id": a.get("addepar_owned_id"),
+            "addepar_owner_id": a.get("addepar_owner_id"),
+            "archway_identifier": a.get("archway_identifier"),
+            "period": per, "nav": nav, "document_status": a.get("document_status"),
         })
 
-    candidates = []   # (investment_id, entity, period) -> list of candidate rows
     grouped = defaultdict(list)
-    for doc in docs:
-        status = (doc.get("document_status") or "").strip().lower()
-        allocs = _flatten_allocations(doc)
-        # tag gate: a doc whose allocations span >1 investment is consolidated
-        # (custodian/Merrill) -- manager statements map to exactly one.
-        span = {a.get("investment_id") for a in allocs if a.get("investment_id")}
-        for a in allocs:
-            nav_field, nav = detect_nav(a)
-            as_of = parse_date(a.get("data_date"))
-            per = period_key(as_of)
-            inv_id = a.get("investment_id")
-            entity = (a.get("entity") or "").strip()
-            # ---- gates ----
-            if status in REVIEW_STATUSES:
-                exc(f"review status: {status}", doc, a, nav, per); continue
-            if len(span) > 1:
-                exc("allocations span >1 investment (consolidated/custodian)", doc, a, nav, per); continue
-            if not inv_id:
-                exc("missing investment_id (untagged)", doc, a, nav, per); continue
-            if not entity or entity == "--":
-                exc("missing/`--` entity tag", doc, a, nav, per); continue
-            if as_of is None:
-                exc("unparseable data_date", doc, a, nav, per); continue
-            if nav is None:
-                exc("no NAV field found in allocation", doc, a, nav, per); continue
-            if nav < 0:
-                exc("negative NAV", doc, a, nav, per); continue
-            grouped[(inv_id, entity, per)].append({
-                "investment": a.get("investment"), "investment_id": inv_id,
-                "entity": entity, "period": per, "as_of": as_of.isoformat(),
-                "nav": nav, "nav_field": nav_field,
-                "document_type": doc.get("document_type"),
-                "doc_id": doc.get("id"), "doc_name": doc.get("name"),
-                "uploaded": doc.get("uploaded") or "",
-            })
+    for a in allocs:
+        vd = a.get("validated_data") or {}
+        status = (a.get("document_status") or "").strip().lower()
+        nav_field, nav = detect_nav(vd)
+        as_of = parse_date(vd.get("endingDate") or vd.get("reportDate"))
+        per = as_of.isoformat() if as_of else None
+        entity = (vd.get("entity") or "").strip()
+        owned = a.get("addepar_owned_id")
+        owner = a.get("addepar_owner_id")
+        arch = a.get("archway_identifier")
 
-    # dedupe per (investment, entity, period): best statement type, then latest upload
-    def rank(r):
-        return (TYPE_PRIORITY.get((r["document_type"] or "").lower(), 9),
-                _neg_upload(r["uploaded"]))
+        if status in REVIEW_STATUSES:
+            exc(f"review status: {status}", a, nav, per); continue
+        if as_of is None:
+            exc("no endingDate in validated_data", a, nav, per); continue
+        if nav is None:
+            exc("no NAV (endingBalance) in validated_data", a, nav, per); continue
+        if not entity:
+            exc("no entity in validated_data", a, nav, per); continue
+        # crosswalk: need at least one durable link to Addepar/Archway
+        if not (owner or owned or arch):
+            exc("no Addepar/Archway crosswalk id on allocation", a, nav, per); continue
+        if nav < 0:
+            exc("negative endingBalance (review)", a, nav, per); continue
+
+        rec = {
+            "fund": vd.get("fundName") or a.get("investment"),
+            "entity": entity,
+            "period": per, "as_of": per, "nav": nav, "nav_field": nav_field,
+            "addepar_owned_id": owned, "addepar_owner_id": owner,
+            "archway_identifier": arch,
+            "investment_structure": a.get("investment_structure"),
+            "currency": vd.get("currency_code") or vd.get("currency"),
+            "allocation_id": a.get("allocation_id"),
+            "doc_name": a.get("name"),
+        }
+        for f in EXTRA_FIELDS:
+            if f in vd:
+                rec[f] = _num(vd.get(f))
+        # dedupe key: the durable identity of this LP position at this period-end
+        key = (owned or a.get("investment_id") or rec["fund"], owner or entity, per)
+        grouped[key].append(rec)
+
+    # one winner per (investment, entity, period): richest validated_data wins
     for key, rows in grouped.items():
-        rows.sort(key=rank)
-        winner = rows[0]
-        accepted.append(winner)
-        for loser in rows[1:]:
-            exceptions.append({**{k: loser.get(k) for k in
-                               ("doc_id","doc_name","document_type","investment",
-                                "investment_id","entity","period","nav")},
-                               "reason": "duplicate for period (superseded by higher-priority statement)"})
+        rows.sort(key=lambda r: -sum(1 for f in EXTRA_FIELDS if r.get(f) is not None))
+        accepted.append(rows[0])
+        for extra in rows[1:]:
+            exceptions.append({**{k: extra.get(k) for k in
+                              ("allocation_id", "fund", "entity", "period", "nav",
+                               "addepar_owned_id", "addepar_owner_id")},
+                              "reason": "duplicate for period (kept the richer statement)"})
 
-    # numeric sanity: flag implausible period-over-period jumps (possible OCR slip)
+    # numeric sanity: implausible period-over-period NAV jump (OCR/decimal guard)
     by_series = defaultdict(list)
     for r in accepted:
-        by_series[(r["investment_id"], r["entity"])].append(r)
-    flagged_ids = set()
+        by_series[(r["addepar_owned_id"] or r["fund"], r["addepar_owner_id"] or r["entity"])].append(r)
+    flagged = set()
     for series in by_series.values():
         series.sort(key=lambda r: r["period"])
         for prev, cur in zip(series, series[1:]):
-            if prev["nav"] and cur["nav"]:
-                jump = abs(cur["nav"] / prev["nav"] - 1)
-                if jump > jump_pct:
-                    flagged_ids.add(id(cur))
-                    exceptions.append({
-                        "reason": f"NAV jump {jump*100:.0f}% vs prior period (review: possible OCR/decimal error)",
-                        "doc_id": cur["doc_id"], "doc_name": cur["doc_name"],
-                        "document_type": cur["document_type"], "investment": cur["investment"],
-                        "investment_id": cur["investment_id"], "entity": cur["entity"],
-                        "period": cur["period"], "nav": cur["nav"],
-                    })
-    accepted = [r for r in accepted if id(r) not in flagged_ids]
+            if prev["nav"] and cur["nav"] and abs(cur["nav"] / prev["nav"] - 1) > jump_pct:
+                flagged.add(id(cur))
+                exceptions.append({**{k: cur.get(k) for k in
+                                  ("allocation_id", "fund", "entity", "period", "nav",
+                                   "addepar_owned_id", "addepar_owner_id")},
+                                  "reason": f"NAV jump {abs(cur['nav']/prev['nav']-1)*100:.0f}% vs prior (review)"})
+    accepted = [r for r in accepted if id(r) not in flagged]
     return accepted, exceptions
 
 
-def _neg_upload(s):
-    """Sort key so the latest upload wins (ties after type priority)."""
-    d = parse_date(s)
-    return -(d.toordinal()) if d else 0
-
-
 # --------------------------------------------------------------------------- #
-# Probe + main
+# probe / main
 # --------------------------------------------------------------------------- #
-def probe(n_docs: int = 5):
-    """Dump raw allocation field names + a sample so the NAV field can be pinned."""
-    print("Probing Canoe /v1/documents/data (read-only)...")
-    resp = _fetch_page(1, {"document_type": ",".join(sorted(STATEMENT_TYPE_NAMES))})
-    docs = resp.json()[:n_docs]
-    keys = set()
-    sample = None
-    for d in docs:
-        for a in _flatten_allocations(d):
-            keys |= set(a.keys())
-            if sample is None and detect_nav(a)[0]:
-                sample = a
-    print("\nUnion of allocation field names:\n  " + "\n  ".join(sorted(keys)))
-    nav_present = [k for k in NAV_FIELD_CANDIDATES if k in keys]
-    print(f"\nNAV candidates present: {nav_present or 'NONE — inspect the keys above and add the right one to NAV_FIELD_CANDIDATES'}")
-    if sample:
-        print("\nSample allocation (NAV auto-detected as "
-              f"'{detect_nav(sample)[0]}'={detect_nav(sample)[1]}):")
-        print(json.dumps({k: sample.get(k) for k in
-              ("investment", "investment_id", "entity", "data_date", detect_nav(sample)[0])}, indent=2))
+def probe():
+    print("Probing a recent quarter of Account Statement validated_data...")
+    allocs = pull_window("2024-03-30", "2024-03-31")
+    from collections import Counter
+    navf = Counter()
+    ids = Counter()
+    for a in allocs:
+        vd = a.get("validated_data") or {}
+        f, _ = detect_nav(vd)
+        navf[f] += 1
+        ids["owner_id" if a.get("addepar_owner_id") else "owner_id_NULL"] += 1
+        ids["owned_id" if a.get("addepar_owned_id") else "owned_id_NULL"] += 1
+    print(f"allocations: {len(allocs)}")
+    print("NAV field detected:", dict(navf))
+    print("crosswalk id population:", dict(ids))
+    for a in allocs[:2]:
+        vd = a.get("validated_data") or {}
+        print("  sample:", {"fund": vd.get("fundName"), "entity": vd.get("entity"),
+              "endingBalance": vd.get("endingBalance"), "endingDate": vd.get("endingDate"),
+              "addepar_owner_id": a.get("addepar_owner_id"),
+              "addepar_owned_id": a.get("addepar_owned_id")})
 
 
 def write_csv(path, rows, cols):
@@ -285,29 +281,38 @@ def write_csv(path, rows, cols):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--probe", action="store_true", help="dump allocation fields to pin the NAV key")
-    ap.add_argument("--jump-pct", type=float, default=0.5, help="period-over-period NAV jump band (0.5=50%%)")
+    ap.add_argument("--start", help="first month YYYY-MM")
+    ap.add_argument("--end", help="last month YYYY-MM")
+    ap.add_argument("--probe", action="store_true")
+    ap.add_argument("--jump-pct", type=float, default=0.5)
     ap.add_argument("--out", default=OUT_DIR)
     args = ap.parse_args()
 
     if args.probe:
         probe()
         return 0
+    if not (args.start and args.end):
+        print("Provide --start YYYY-MM --end YYYY-MM (or --probe).")
+        return 2
 
-    print("Pulling Canoe statement docs (read-only)...")
-    docs = pull_docs()
-    print(f"{len(docs)} docs. Building + validating valuations...")
-    accepted, exceptions = build_valuations(docs, jump_pct=args.jump_pct)
+    all_allocs = []
+    for ds, de in month_windows(args.start, args.end):
+        w = pull_window(ds, de)
+        if w:
+            print(f"  {ds[:7]}: {len(w)} statement allocations")
+        all_allocs.extend(w)
+    print(f"\nPulled {len(all_allocs)} allocations. Validating...")
+    accepted, exceptions = build_valuations(all_allocs, jump_pct=args.jump_pct)
 
-    acc_cols = ["investment", "investment_id", "entity", "period", "as_of", "nav",
-                "nav_field", "document_type", "doc_id", "doc_name"]
-    exc_cols = ["reason", "investment", "investment_id", "entity", "period", "nav",
-                "document_type", "document_status", "doc_id", "doc_name"]
+    acc_cols = ["fund", "entity", "period", "nav", "nav_field", "addepar_owned_id",
+                "addepar_owner_id", "archway_identifier", "investment_structure",
+                "currency"] + EXTRA_FIELDS + ["allocation_id", "doc_name"]
+    exc_cols = ["reason", "fund", "entity", "period", "nav", "addepar_owned_id",
+                "addepar_owner_id", "archway_identifier", "document_status", "allocation_id"]
     write_csv(os.path.join(args.out, "canoe_valuations.csv"), accepted, acc_cols)
     write_csv(os.path.join(args.out, "canoe_validation_exceptions.csv"), exceptions, exc_cols)
-
     from collections import Counter
-    print(f"\nAccepted NAVs: {len(accepted)}  |  Exceptions: {len(exceptions)}")
+    print(f"\nAccepted NAVs: {len(accepted)} | Exceptions: {len(exceptions)}")
     print("Exception reasons:", dict(Counter(e["reason"].split(" (")[0].split(":")[0]
                                               for e in exceptions).most_common()))
     print("Output:", args.out)
