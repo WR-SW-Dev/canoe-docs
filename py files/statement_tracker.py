@@ -854,10 +854,13 @@ def write_xlsx(path: str, recs: list[dict], dest: str) -> None:
             "to an entity in Canoe.")
     HDR_ROW = len(LEGEND) + 3          # legend, note, blank row, then the header
 
-    def paint(c, rec):
+    def paint(c, rec, with_link=True):
         if int(rec["n_docs"] or 0) > 0:
             c.fill = green
-            link = _file_link(rec, index, dest)
+            # On funds with entity sub-rows the roll-up row stays color-only:
+            # a single fund-level link would point at one arbitrary entity's
+            # statement. Links live on the entity rows there.
+            link = _file_link(rec, index, dest) if with_link else None
             if link:
                 # Give the cell display text, otherwise Excel renders the raw URL.
                 c.value = "Link"
@@ -905,7 +908,7 @@ def write_xlsx(path: str, recs: list[dict], dest: str) -> None:
                 c.border = thin
                 rec = cell_rec.get((inv, "", p))
                 if rec is not None:
-                    paint(c, rec)
+                    paint(c, rec, with_link=not entities)
             i += 1
             for ent in entities:
                 lbl = ws.cell(i, 1, "    " + ent)
