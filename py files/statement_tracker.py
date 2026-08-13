@@ -850,17 +850,16 @@ def write_xlsx(path: str, recs: list[dict], dest: str) -> None:
               (red, "Expected, not received in Canoe"),
               (None, "Not tracked for this period")]
     NOTE = ("Funds with multiple investing entities show one sub-row per entity; "
-            "the fund row counts every statement, including ones not yet tagged "
-            "to an entity in Canoe.")
+            "the fund row is a header only -- status and links live on the entity "
+            "rows. A statement not yet tagged to an entity in Canoe turns no row "
+            "green: red entity rows with the statement in hand mean the tagging "
+            "needs fixing in Canoe.")
     HDR_ROW = len(LEGEND) + 3          # legend, note, blank row, then the header
 
-    def paint(c, rec, with_link=True):
+    def paint(c, rec):
         if int(rec["n_docs"] or 0) > 0:
             c.fill = green
-            # On funds with entity sub-rows the roll-up row stays color-only:
-            # a single fund-level link would point at one arbitrary entity's
-            # statement. Links live on the entity rows there.
-            link = _file_link(rec, index, dest) if with_link else None
+            link = _file_link(rec, index, dest)
             if link:
                 # Give the cell display text, otherwise Excel renders the raw URL.
                 c.value = "Link"
@@ -906,9 +905,13 @@ def write_xlsx(path: str, recs: list[dict], dest: str) -> None:
             for j, p in enumerate(periods, start=2):
                 c = ws.cell(i, j)
                 c.border = thin
+                # Funds with entity sub-rows: the roll-up row is a pure header;
+                # all status color and links live on the entity rows.
+                if entities:
+                    continue
                 rec = cell_rec.get((inv, "", p))
                 if rec is not None:
-                    paint(c, rec, with_link=not entities)
+                    paint(c, rec)
             i += 1
             for ent in entities:
                 lbl = ws.cell(i, 1, "    " + ent)
