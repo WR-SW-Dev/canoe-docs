@@ -557,6 +557,12 @@ def sync_new_funds(sched: list[dict], rows: list[dict], path: str) -> list[dict]
 # Reconciliation
 # --------------------------------------------------------------------------- #
 
+# Types that are entity-specific by nature: each investing entity gets its own.
+# Only these can satisfy an ENTITY sub-row or trigger the amber re-tag flag --
+# quarterly reports, financials etc. are addressed to all LPs, carry no entity,
+# and count only at fund level.
+ENTITY_DOC_TYPES = {"account statement", "capital account statement"}
+
 # When several documents cover the same period, the one representing the actual
 # statement wins (drives the grid's "Link" and the report detail): a capital
 # account statement beats a quarterly report beats audited financials.
@@ -605,14 +611,21 @@ def reconcile(sched: list[dict], rows: list[dict], today: date) -> list[dict]:
                         if r["entity"] and r["entity"] != "--"}, key=str.lower)
         groups = [("", fund_rows)]
         if len(named) >= 2:
-            groups += [(e, [r for r in fund_rows if r["entity"] == e]) for e in named]
+            # Entity sub-rows only track entity-specific statement types;
+            # fund-level reports can never turn an entity row green.
+            groups += [(e, [r for r in fund_rows if r["entity"] == e
+                            and r["document_type"].lower() in ENTITY_DOC_TYPES])
+                       for e in named]
 
-        # Statements Canoe hasn't tagged to any entity, by period: a red entity
-        # cell with one of these present becomes "retag" -- the statement is in
-        # Canoe, it just needs its entity assigned.
+        # Account statements Canoe hasn't tagged to any entity, by period: a
+        # red entity cell with one of these present becomes "retag" -- the
+        # statement is in Canoe, it just needs its entity assigned. Untagged
+        # fund-level docs (quarterly reports, financials) don't qualify --
+        # they have no entity to assign.
         untagged_by_period: dict[str, list[dict]] = {}
         for r in fund_rows:
-            if r["entity"] in ("", "--") and r["data_date"]:
+            if (r["entity"] in ("", "--") and r["data_date"]
+                    and r["document_type"].lower() in ENTITY_DOC_TYPES):
                 untagged_by_period.setdefault(
                     period_of(r["data_date"], freq), []).append(r)
         for docs_ in untagged_by_period.values():
