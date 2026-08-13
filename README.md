@@ -185,6 +185,15 @@ cd "py files"
 ../.venv/bin/python canoe_sync.py --dry-run   # discover + report, upload nothing
 ../.venv/bin/python canoe_sync.py             # incremental sync (same as the weekly job)
 ../.venv/bin/python canoe_sync.py --full      # reconsider all documents (skips those in the manifest)
+../.venv/bin/python canoe_sync.py --local-dest ~/Desktop/Canoe --full   # backfill to a LOCAL folder
 ```
 (For a manual run outside `run_sync.sh`, the environment must carry the config — either
 export it, or run via `run_sync.sh` which loads it from the Keychain.)
+
+**Local backfill (`--local-dest`).** Writes files to a local folder in the same
+`Fund/Year/Category` structure instead of uploading — useful for a first backfill or a
+review copy, and it needs **no Graph certificate**. It keeps its own manifest
+(`_sync_manifest.json`) inside that folder and does **not** touch the SharePoint
+incremental state, so it never blocks or interferes with the real weekly sync.
+A full backfill downloads documents one at a time and self-throttles to Canoe's rate
+limit, so expect a few thousand documents to take a couple of hours.

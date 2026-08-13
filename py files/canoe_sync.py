@@ -79,16 +79,31 @@ def save_since(iso: str) -> None:
 
 
 # -- Canoe discovery + download ------------------------------------------------
+def _canoe_get(url: str, params: dict | None = None, timeout: int = 180) -> requests.Response:
+    """GET the Canoe API, honouring Retry-After on 429/503 and retrying transient 5xx."""
+    for attempt in range(1, 6):
+        resp = requests.get(url, headers=canoe_auth.get_auth_headers(), params=params or {}, timeout=timeout)
+        if resp.status_code == 200:
+            return resp
+        if resp.status_code in (429, 503):
+            wait = int(resp.headers.get("Retry-After", 10 * attempt))
+            time.sleep(max(1, wait))
+            continue
+        if resp.status_code in (500, 502, 504) and attempt < 5:
+            time.sleep(5 * attempt)
+            continue
+        resp.raise_for_status()
+    raise RuntimeError(f"GET {url} failed after retries")
+
+
 def discover(since_date: str | None) -> list[dict]:
     """All document metadata records in the window, de-duplicated by id."""
-    headers = canoe_auth.get_auth_headers()
     params = {}
     if since_date:
         params["file_upload_time_start"] = since_date
     seen, out, page = set(), [], 1
     while page <= 1000:
-        resp = requests.get(DATA_URL, headers=headers, params={**params, "page": page, "limit": 100}, timeout=180)
-        resp.raise_for_status()
+        resp = _canoe_get(DATA_URL, {**params, "page": page, "limit": 100})
         body = resp.json()
         recs = body.get("data") if isinstance(body, dict) else body
         new = [r for r in (recs or []) if r.get("id") and r["id"] not in seen]
@@ -102,16 +117,15 @@ def discover(since_date: str | None) -> list[dict]:
 
 
 def download_bytes(doc_id: str) -> bytes:
-    """GET /v1/documents/{id} -> file bytes, with a couple of retries for transient 5xx."""
-    for attempt in range(1, 4):
-        resp = requests.get(f"{DOC_URL}/{doc_id}", headers=canoe_auth.get_auth_headers(), timeout=180)
-        if resp.status_code == 200:
-            return resp.content
-        if resp.status_code in (500, 502, 503, 504) and attempt < 3:
-            time.sleep(5 * attempt)
-            continue
-        resp.raise_for_status()
-    raise RuntimeError(f"download failed for {doc_id}")
+    """GET /v1/documents/{id} -> file bytes (rate-limit aware via _canoe_get)."""
+    return _canoe_get(f"{DOC_URL}/{doc_id}").content
+
+
+def write_local(root: str, folder: str, filename: str, data: bytes) -> None:
+    path = os.path.join(root, *folder.split("/"), filename)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(data)
 
 
 def target_path(rec: dict) -> tuple[str, str]:
@@ -134,23 +148,40 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Sync Canoe documents to SharePoint via Graph.")
     ap.add_argument("--full", action="store_true", help="Ignore the incremental window; consider all documents.")
     ap.add_argument("--dry-run", action="store_true", help="Discover and report, but download/upload nothing.")
+    ap.add_argument("--local-dest", default=None,
+                    help="Write files to this LOCAL folder instead of uploading to SharePoint "
+                         "(e.g. ~/Desktop/Canoe). No Graph/certificate needed; uses its own manifest in the folder.")
+    ap.add_argument("--since", default=None, help="Override the incremental window (ISO date, e.g. 2026-01-01).")
+    ap.add_argument("--limit", type=int, default=None, help="Process at most N documents (testing / controlled runs).")
     args = ap.parse_args()
 
     log_path = setup_logging(config.log_dir())
     run_start = datetime.now(timezone.utc)
     logging.info("=== canoe_sync start (log: %s) ===", log_path)
 
+    local_dest = os.path.abspath(os.path.expanduser(args.local_dest)) if args.local_dest else None
     try:
-        manifest = Manifest(config.manifest_path())
-        graph = None if args.dry_run else GraphClient()
-        if graph:
-            logging.info("Graph access OK (drive %s)", graph.verify_access())
+        if local_dest:
+            os.makedirs(local_dest, exist_ok=True)
+            manifest = Manifest(os.path.join(local_dest, "_sync_manifest.json"))
+            graph = None
+            logging.info("LOCAL mode: writing to %s (no SharePoint upload)", local_dest)
+        else:
+            manifest = Manifest(config.manifest_path())
+            graph = None if args.dry_run else GraphClient()
+            if graph:
+                logging.info("Graph access OK (drive %s)", graph.verify_access())
     except (config.ConfigError, GraphError) as exc:
         logging.error("Startup failed: %s", exc)
         sys.exit(1)
 
-    since = None if args.full else load_since()
-    since_date = since[:10] if since else None
+    if args.since:
+        since_date = args.since[:10]
+    elif args.full:
+        since_date = None
+    else:
+        since = load_since()
+        since_date = since[:10] if since else None
     logging.info("Discovery mode: %s", f"incremental since {since_date}" if since_date else "FULL")
 
     try:
@@ -159,6 +190,9 @@ def main() -> None:
         logging.error("Discovery failed: %s", exc)
         sys.exit(1)
     logging.info("Documents fetched from Canoe: %d", len(records))
+    if args.limit:
+        records = records[:args.limit]
+        logging.info("Limited to %d documents.", len(records))
 
     uploaded = skipped = errors = 0
     used = manifest.used_paths()   # collision-safe naming across runs
@@ -185,15 +219,20 @@ def main() -> None:
             continue
         try:
             data = download_bytes(doc_id)
-            graph.upload(data, folder, filename)
+            if local_dest:
+                write_local(local_dest, folder, filename, data)
+            else:
+                graph.upload(data, folder, filename)
             manifest.record(doc_id, f"{folder}/{filename}", datetime.now(timezone.utc).isoformat(), len(data))
             uploaded += 1
-            logging.info("uploaded %s (%d bytes) -> %s/%s", doc_id, len(data), folder, filename)
+            logging.info("%s %s (%d bytes) -> %s/%s", "wrote" if local_dest else "uploaded",
+                         doc_id, len(data), folder, filename)
         except Exception as exc:  # noqa: BLE001 -- log every failure with the doc id, keep going
             errors += 1
             logging.error("FAILED doc_id=%s (%s/%s): %s", doc_id, folder, filename, exc)
 
-    if not args.dry_run and errors == 0:
+    # Advance the shared incremental marker only for a real Graph run (not local/dry).
+    if not args.dry_run and not local_dest and errors == 0:
         save_since(run_start.isoformat())
 
     logging.info(
