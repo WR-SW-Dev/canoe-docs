@@ -607,6 +607,17 @@ def reconcile(sched: list[dict], rows: list[dict], today: date) -> list[dict]:
         if len(named) >= 2:
             groups += [(e, [r for r in fund_rows if r["entity"] == e]) for e in named]
 
+        # Statements Canoe hasn't tagged to any entity, by period: a red entity
+        # cell with one of these present becomes "retag" -- the statement is in
+        # Canoe, it just needs its entity assigned.
+        untagged_by_period: dict[str, list[dict]] = {}
+        for r in fund_rows:
+            if r["entity"] in ("", "--") and r["data_date"]:
+                untagged_by_period.setdefault(
+                    period_of(r["data_date"], freq), []).append(r)
+        for docs_ in untagged_by_period.values():
+            docs_.sort(key=_doc_rank)
+
         for entity, ent_rows in groups:
             ent_dates = [r["data_date"] for r in ent_rows if r["data_date"]]
             g_start = start
@@ -632,6 +643,11 @@ def reconcile(sched: list[dict], rows: list[dict], today: date) -> list[dict]:
                     best = clean[0]
                 elif flagged:
                     status, received, best = "review", None, flagged[0]
+                elif entity and untagged_by_period.get(p):
+                    # Nothing tagged to this entity, but an untagged statement
+                    # covers the period -- flag for re-tagging, don't cry missing.
+                    status, received = "retag", None
+                    best = untagged_by_period[p][0]
                 else:
                     best, received = None, None
                     status = "overdue" if today > due else "pending"
@@ -841,6 +857,7 @@ def write_xlsx(path: str, recs: list[dict], dest: str) -> None:
     it), red = expected but not received, blank = not tracked for that period."""
     green = PatternFill("solid", fgColor="63BE7B")
     red = PatternFill("solid", fgColor="F8696B")
+    amber = PatternFill("solid", fgColor="FFD966")
     thin = Border(*[Side(style="thin", color="D9D9D9")] * 4)
     center = Alignment(horizontal="center")
     index = build_archive_index(dest)
@@ -848,16 +865,25 @@ def write_xlsx(path: str, recs: list[dict], dest: str) -> None:
     # NB: labels must not start with "=" or Excel treats them as formulas (#NAME?).
     LEGEND = [(green, 'Received -- click "Link" to open the statement'),
               (red, "Expected, not received in Canoe"),
+              (amber, 'Statement in Canoe but not tagged to this entity -- click '
+                      '"Tag" to open it, then assign the entity in Canoe'),
               (None, "Not tracked for this period")]
     NOTE = ("Funds with multiple investing entities show one sub-row per entity; "
             "the fund row is a header only -- status and links live on the entity "
-            "rows. A statement not yet tagged to an entity in Canoe turns no row "
-            "green: red entity rows with the statement in hand mean the tagging "
-            "needs fixing in Canoe.")
+            "rows. Amber cells mean the period's statement arrived but is not yet "
+            "tagged to an entity in Canoe (it may belong to a different sub-row).")
     HDR_ROW = len(LEGEND) + 3          # legend, note, blank row, then the header
 
     def paint(c, rec):
-        if int(rec["n_docs"] or 0) > 0:
+        if rec["status"] == "retag":
+            c.fill = amber
+            link = _file_link(rec, index, dest)   # rec carries the untagged doc
+            if link:
+                c.value = "Tag"
+                c.hyperlink = link
+                c.font = Font(color="7F6000", underline="single")
+                c.alignment = center
+        elif int(rec["n_docs"] or 0) > 0:
             c.fill = green
             link = _file_link(rec, index, dest)
             if link:
