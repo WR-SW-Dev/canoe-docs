@@ -3,9 +3,10 @@
 config.py -- Central configuration for the Canoe -> SharePoint sync.
 
 ALL configuration is read from the environment. On the App Server the values are
-kept in the macOS Keychain by setup.py and exported into the environment by the
-run wrapper (or read here as a Keychain fallback for interactive runs). No values
-are stored in this repository. See `.env.example` for the full list of keys.
+kept in a local secrets file (~/.config/wr-canoe-sync/secrets.env, mode 600) written
+by setup.py and exported into the environment by the run wrapper (or read here as a
+fallback for interactive runs). No values are stored in this repository. See
+`.env.example` for the full list of keys.
 
 Keys
 ----
@@ -30,39 +31,49 @@ Canoe API credentials are read separately by canoe_auth.py
 from __future__ import annotations
 
 import os
-import subprocess
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-KEYCHAIN_SERVICE = "canoe-app"
+
+# Secrets live in a local file, not the macOS Keychain: the login keychain is locked
+# after an unattended reboot, which a launchd job (no interactive session) can't unlock,
+# so it would silently read empty values. The file is mode 600, written by setup.py.
+SECRETS_FILE = os.path.join(os.path.expanduser("~"), ".config", "wr-canoe-sync", "secrets.env")
 
 # Runtime state (manifest, logs, last-run) MUST live on local disk, never in the repo
 # (which may sit in a synced folder). Default to the macOS per-user app-data location.
 DEFAULT_DATA_DIR = os.path.join(os.path.expanduser("~"), "Library", "Application Support", "canoe-sync")
+
+_secrets_cache: dict[str, str] | None = None
 
 
 class ConfigError(RuntimeError):
     pass
 
 
-def _keychain(key: str) -> str | None:
-    """Fallback lookup in the macOS Keychain (service 'canoe-app', account=<KEY>)."""
-    try:
-        r = subprocess.run(
-            ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", key, "-w"],
-            capture_output=True, text=True, check=False,
-        )
-        if r.returncode == 0:
-            return r.stdout.strip()
-    except (FileNotFoundError, OSError):
-        pass
-    return None
+def _secrets_file(key: str) -> str | None:
+    """Fallback lookup in the local secrets file (KEY=VALUE lines, read once and cached)."""
+    global _secrets_cache
+    if _secrets_cache is None:
+        values: dict[str, str] = {}
+        try:
+            with open(SECRETS_FILE) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    values[k.strip()] = v.strip()
+        except FileNotFoundError:
+            pass
+        _secrets_cache = values
+    return _secrets_cache.get(key)
 
 
 def get(key: str, default: str | None = None, required: bool = True) -> str | None:
-    """Read a config value: environment first, then Keychain, then default."""
+    """Read a config value: environment first, then the local secrets file, then default."""
     val = os.environ.get(key, "").strip()
     if not val:
-        val = _keychain(key) or ""
+        val = _secrets_file(key) or ""
     if not val:
         if default is not None:
             return default

@@ -124,6 +124,39 @@ class GraphClient:
         """One harmless call used by setup.py to validate credentials. Returns the drive id."""
         return self.drive_id()
 
+    def list_files(self) -> list[dict]:
+        """Recursively list every file actually in <root_folder> in the live library.
+
+        Returns [{"path": <path relative to root_folder>, "name", "size", "item_id"}].
+        This is the authoritative "what's really in SharePoint" view -- use it for
+        inventory/reconciliation rather than a local mirror, which can diverge.
+        """
+        drive = self.drive_id()
+        root = self._root_folder
+        results: list[dict] = []
+        stack = [root] if root else [""]
+        while stack:
+            folder = stack.pop()
+            addr = "root" if not folder else f"root:/{folder}:"
+            url = f"{GRAPH}/drives/{drive}/{addr}/children?$top=200&$select=name,size,id,folder,file"
+            while url:
+                r = self._request("GET", url)
+                if r.status_code == 404:
+                    break  # folder not present yet
+                if r.status_code != 200:
+                    raise GraphError(f"Listing '{folder}' failed: {r.status_code} {r.text[:200]}")
+                data = r.json()
+                for item in data.get("value", []):
+                    child = f"{folder}/{item['name']}" if folder else item["name"]
+                    if "folder" in item:
+                        stack.append(child)
+                    else:
+                        rel = child[len(root) + 1:] if root and child.startswith(root + "/") else child
+                        results.append({"path": rel, "name": item["name"],
+                                        "size": item.get("size", 0), "item_id": item["id"]})
+                url = data.get("@odata.nextLink")
+        return results
+
     # -- folders ------------------------------------------------------------
     def ensure_folder(self, rel_folder: str) -> None:
         """Create nested folders under the configured root folder if absent."""

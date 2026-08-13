@@ -62,7 +62,7 @@ Install steps complete. Remaining manual steps:
   1. Ensure the app-registration certificate PRIVATE KEY (PEM) is on this machine,
      readable only by this user (chmod 600), and note its absolute path.
 
-  2. Configure credentials -- writes to the macOS Keychain and validates Graph access:
+  2. Configure credentials -- writes to a local secrets file and validates Graph access:
        "$BASE/.venv/bin/python" "$BASE/setup.py"
 
   3. Verify Canoe auth:

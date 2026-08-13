@@ -48,6 +48,14 @@ class Manifest:
         """Destination paths already claimed by a document (for collision-safe naming)."""
         return {e.get("dest_path") for e in self._data.values() if e.get("dest_path")}
 
+    def items(self) -> dict:
+        """The raw {doc_id: entry} mapping (read-only use)."""
+        return dict(self._data)
+
+    def doc_id_by_path(self) -> dict:
+        """Reverse index: dest_path -> doc_id (for reconciling a live listing back to Canoe ids)."""
+        return {e.get("dest_path"): did for did, e in self._data.items() if e.get("dest_path")}
+
     def _save(self) -> None:
         os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
         # Atomic write so a crash never corrupts the manifest.

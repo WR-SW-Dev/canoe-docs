@@ -2,13 +2,15 @@
 """
 setup.py -- First-run configuration for the Canoe -> SharePoint sync.
 
-Prompts in the terminal for every configuration value and writes them to the
-macOS **Keychain** (the App Server's secret store), NOT a .env file. Secret fields
-are entered hidden. It then VALIDATES the Microsoft Graph credentials by making one
-harmless call (resolving the target SharePoint library), so a bad install fails here
-at setup time rather than the following Monday.
+Prompts in the terminal for every configuration value and writes them to a local
+secrets file (~/.config/wr-canoe-sync/secrets.env, mode 600), NOT a .env file in the
+repo. The macOS login keychain is deliberately avoided: it is locked after an
+unattended reboot, which a launchd job (no interactive session) can't unlock. Secret
+fields are entered hidden. It then VALIDATES the Microsoft Graph credentials by making
+one harmless call (resolving the target SharePoint library), so a bad install fails
+here at setup time rather than the following Monday.
 
-Re-runnable: existing Keychain values are offered as defaults -- press Enter to keep.
+Re-runnable: existing secrets-file values are offered as defaults -- press Enter to keep.
 
 Run (after install.sh, so dependencies and the cert key file are in place):
     python setup.py
@@ -20,14 +22,16 @@ credentials onto the machine (encrypted email / password manager) is a human ste
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 from getpass import getpass
 
 # The sync modules live in "py files/"; make them importable for the Graph validation.
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "py files"))
 
-KEYCHAIN_SERVICE = "canoe-app"
+# Secrets go to a local file (mode 600), NOT the macOS Keychain: the login keychain is
+# locked after an unattended reboot, which a launchd job can't unlock.
+SECRETS_DIR = os.path.join(os.path.expanduser("~"), ".config", "wr-canoe-sync")
+SECRETS_FILE = os.path.join(SECRETS_DIR, "secrets.env")
 
 # (key, prompt, is_secret, default)
 GRAPH_FIELDS = [
@@ -49,19 +53,28 @@ CANOE_FIELDS = [
 ]
 
 
-def kc_get(key: str) -> str:
-    r = subprocess.run(
-        ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", key, "-w"],
-        capture_output=True, text=True,
-    )
-    return r.stdout.strip() if r.returncode == 0 else ""
+def read_secrets() -> dict:
+    values = {}
+    if os.path.exists(SECRETS_FILE):
+        with open(SECRETS_FILE) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                values[k.strip()] = v.strip()
+    return values
 
 
-def kc_set(key: str, value: str) -> None:
-    subprocess.run(
-        ["security", "add-generic-password", "-U", "-s", KEYCHAIN_SERVICE, "-a", key, "-w", value],
-        check=True, capture_output=True,
-    )
+def write_secrets(values: dict) -> None:
+    os.makedirs(SECRETS_DIR, mode=0o700, exist_ok=True)
+    os.chmod(SECRETS_DIR, 0o700)
+    merged = read_secrets()
+    merged.update(values)
+    with open(SECRETS_FILE, "w") as f:
+        for k, v in merged.items():
+            f.write(f"{k}={v}\n")
+    os.chmod(SECRETS_FILE, 0o600)
 
 
 def ask(prompt: str, is_secret: bool, current: str) -> str:
@@ -77,9 +90,10 @@ def ask(prompt: str, is_secret: bool, current: str) -> str:
 
 def prompt_group(title: str, fields) -> dict:
     print(f"\n{title}")
+    current_values = read_secrets()
     out = {}
     for key, prompt, is_secret, default in fields:
-        current = kc_get(key) or default
+        current = current_values.get(key) or default
         val = ask(prompt, is_secret, current)
         if val:
             out[key] = val
@@ -88,7 +102,7 @@ def prompt_group(title: str, fields) -> dict:
 
 def main() -> None:
     print("Canoe -> SharePoint sync -- configuration")
-    print(f"Values are stored in the macOS Keychain (service '{KEYCHAIN_SERVICE}'); nothing is written to disk in the repo.")
+    print(f"Values are stored in {SECRETS_FILE} (mode 600); nothing is written to the repo.")
 
     values = {}
     values.update(prompt_group("Microsoft Graph / SharePoint:", GRAPH_FIELDS))
@@ -100,9 +114,8 @@ def main() -> None:
         print("\nERROR: Canoe needs Client ID + Secret, or username + password. Nothing written.")
         sys.exit(1)
 
-    for key, val in values.items():
-        kc_set(key, val)
-    print(f"\nSaved {len(values)} value(s) to the Keychain.")
+    write_secrets(values)
+    print(f"\nSaved {len(values)} value(s) to {SECRETS_FILE}.")
 
     # Validate Graph credentials with one harmless call.
     print("\nValidating Microsoft Graph access (resolving the target library)...")

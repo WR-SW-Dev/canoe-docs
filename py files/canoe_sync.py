@@ -21,12 +21,13 @@ There is no email/Teams notification here by design.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import logging
 import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import requests
 
@@ -96,14 +97,18 @@ def _canoe_get(url: str, params: dict | None = None, timeout: int = 180) -> requ
     raise RuntimeError(f"GET {url} failed after retries")
 
 
-def discover(since_date: str | None) -> list[dict]:
-    """All document metadata records in the window, de-duplicated by id."""
-    params = {}
-    if since_date:
-        params["file_upload_time_start"] = since_date
+EARLIEST = date(2015, 1, 1)   # before the earliest document in Canoe
+WINDOW_TIMEOUT = 90           # per-window probe timeout; on timeout we subdivide the window
+
+
+def _fetch_window(start_iso: str, end_iso: str | None) -> list[dict]:
+    """Page through one upload-time window. May raise requests.Timeout if the window is too big."""
+    params = {"file_upload_time_start": start_iso}
+    if end_iso:
+        params["file_upload_time_end"] = end_iso
     seen, out, page = set(), [], 1
     while page <= 1000:
-        resp = _canoe_get(DATA_URL, {**params, "page": page, "limit": 100})
+        resp = _canoe_get(DATA_URL, {**params, "page": page, "limit": 100}, timeout=WINDOW_TIMEOUT)
         body = resp.json()
         recs = body.get("data") if isinstance(body, dict) else body
         new = [r for r in (recs or []) if r.get("id") and r["id"] not in seen]
@@ -113,6 +118,55 @@ def discover(since_date: str | None) -> list[dict]:
             seen.add(r["id"])
         out.extend(new)
         page += 1
+    return out
+
+
+def _discover_range(start: date, end: date | None, seen: set) -> list[dict]:
+    """Fetch [start, end); if the metadata endpoint times out (window too large), halve and recurse.
+
+    Canoe's /v1/documents/data times out on any multi-year span, so a first-run full discovery
+    must be chunked. Adaptive halving finds a workable granularity automatically regardless of
+    how uploads are distributed over time.
+    """
+    end_eff = end or (datetime.now(timezone.utc).date() + timedelta(days=1))
+    try:
+        recs = _fetch_window(start.isoformat(), end.isoformat() if end else None)
+    except requests.exceptions.Timeout:
+        span = (end_eff - start).days
+        if span <= 1:
+            raise RuntimeError(f"Canoe metadata timed out even for a single day ({start}); cannot chunk further")
+        mid = start + timedelta(days=max(1, span // 2))
+        left = _discover_range(start, mid, seen)
+        right = _discover_range(mid, end, seen)
+        return left + right
+    fresh = []
+    for r in recs:
+        rid = r.get("id")
+        if rid and rid not in seen:
+            seen.add(rid)
+            fresh.append(r)
+    return fresh
+
+
+def _next_month(d: date) -> date:
+    return date(d.year + 1, 1, 1) if d.month == 12 else date(d.year, d.month + 1, 1)
+
+
+def discover(since_date: str | None) -> list[dict]:
+    """All document metadata records since `since_date` (or all, chunked monthly to avoid timeouts).
+
+    /v1/documents/data times out on multi-year spans, so we walk month-by-month. Any single
+    month that still times out is halved down to days by _discover_range.
+    """
+    start = date.fromisoformat(since_date[:10]) if since_date else EARLIEST
+    today = datetime.now(timezone.utc).date()
+    seen, out, cur = set(), [], start
+    while cur <= today:
+        nxt = _next_month(cur)
+        end = None if nxt > today else nxt
+        out.extend(_discover_range(cur, end, seen))
+        cur = nxt
+    logging.info("Discovery walked %s -> %s in monthly windows.", start.isoformat(), today.isoformat())
     return out
 
 
@@ -153,11 +207,69 @@ def main() -> None:
                          "(e.g. ~/Desktop/Canoe). No Graph/certificate needed; uses its own manifest in the folder.")
     ap.add_argument("--since", default=None, help="Override the incremental window (ISO date, e.g. 2026-01-01).")
     ap.add_argument("--limit", type=int, default=None, help="Process at most N documents (testing / controlled runs).")
+    ap.add_argument("--seed", action="store_true",
+                    help="Build manifest.json + last_sync.json for ALL current Canoe docs (no download/upload). "
+                         "Placing these on a fresh App Server makes the first sync skip docs already in SharePoint.")
+    ap.add_argument("--seed-out", default=None, help="Directory for the seed files (default: the data dir).")
+    ap.add_argument("--export", default=None,
+                    help="Write a CSV inventory of what's ACTUALLY in the SharePoint library (live, via Graph), "
+                         "each row annotated with the Canoe doc_id from the manifest. Requires Graph config.")
     args = ap.parse_args()
 
     log_path = setup_logging(config.log_dir())
     run_start = datetime.now(timezone.utc)
     logging.info("=== canoe_sync start (log: %s) ===", log_path)
+
+    if args.seed:
+        out = os.path.abspath(os.path.expanduser(args.seed_out)) if args.seed_out else config.data_dir()
+        os.makedirs(out, exist_ok=True)
+        logging.info("SEED mode: building manifest for ALL current Canoe documents -> %s", out)
+        try:
+            records = discover(None)
+        except Exception as exc:
+            logging.error("Seed discovery failed: %s", exc)
+            sys.exit(1)
+        logging.info("Documents discovered: %d", len(records))
+        data, used = {}, set()
+        for rec in records:
+            folder, filename = target_path(rec)
+            full = f"{folder}/{filename}"
+            if full in used:
+                root, ext = os.path.splitext(filename)
+                i = 2
+                while f"{folder}/{root} ({i}){ext}" in used:
+                    i += 1
+                full = f"{folder}/{root} ({i}){ext}"
+            used.add(full)
+            data[rec["id"]] = {"dest_path": full, "uploaded_at": "seed", "size": rec.get("file_size") or 0}
+        json.dump(data, open(os.path.join(out, "manifest.json"), "w"), indent=2, sort_keys=True)
+        json.dump({"last_run_iso": run_start.isoformat()}, open(os.path.join(out, "last_sync.json"), "w"), indent=2)
+        logging.info("Seed written: %d entries -> %s/{manifest.json,last_sync.json}", len(data), out)
+        sys.exit(0)
+
+    if args.export:
+        # Authoritative inventory: list the LIVE SharePoint library via Graph, not a local mirror,
+        # and annotate each file with its Canoe doc_id from the manifest (matched by path).
+        try:
+            files = GraphClient().list_files()
+        except (config.ConfigError, GraphError) as exc:
+            logging.error("Export needs Graph config: %s", exc)
+            sys.exit(1)
+        id_by_path = Manifest(config.manifest_path()).doc_id_by_path()
+        live_paths = {it["path"] for it in files}
+        out = os.path.abspath(os.path.expanduser(args.export))
+        with open(out, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["doc_id", "sharepoint_path", "size_bytes", "item_id", "in_manifest"])
+            for it in sorted(files, key=lambda x: x["path"]):
+                did = id_by_path.get(it["path"], "")
+                w.writerow([did, it["path"], it["size"], it["item_id"], "yes" if did else "no"])
+            # Manifest entries recorded as uploaded but not actually present in the library:
+            for p in sorted(set(id_by_path) - live_paths):
+                w.writerow([id_by_path[p], p, "", "", "MISSING_IN_SHAREPOINT"])
+        logging.info("Export: %d live files (%d matched to a doc_id) -> %s",
+                     len(files), sum(1 for it in files if it["path"] in id_by_path), out)
+        sys.exit(0)
 
     local_dest = os.path.abspath(os.path.expanduser(args.local_dest)) if args.local_dest else None
     try:

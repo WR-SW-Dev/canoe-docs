@@ -43,9 +43,14 @@ There is deliberately **no email or Teams notification** in this application.
 ## Configuration
 
 Every value is read from the **environment**. On the App Server the values are stored
-in the **macOS Keychain** by `setup.py` and exported into the environment by
-`run_sync.sh` at run time — you do **not** keep a `.env` file on the server.
-`.env.example` in the repo lists every key with empty values for reference.
+in a **local secrets file** (`~/.config/wr-canoe-sync/secrets.env`, mode 600) by
+`setup.py` and exported into the environment by `run_sync.sh` at run time — you do
+**not** keep a `.env` file on the server. `.env.example` in the repo lists every key
+with empty values for reference.
+
+> The macOS **Keychain is deliberately not used**: the login keychain is locked after
+> an unattended reboot, so a `launchd` job with no interactive session would silently
+> read empty secrets. A mode-600 file avoids that failure mode.
 
 | Key | What it is | Where its value comes from |
 |---|---|---|
@@ -96,9 +101,9 @@ only its path is configured. Keep it `chmod 600` and outside the repo.
    ```bash
    ./install.sh
    ```
-4. **Configure credentials** — prompts in the terminal, writes to the **Keychain**, and
-   **validates Graph access** with one harmless call (so a bad setup fails now, not
-   next Monday):
+4. **Configure credentials** — prompts in the terminal, writes to the **local secrets
+   file** (`~/.config/wr-canoe-sync/secrets.env`, mode 600), and **validates Graph
+   access** with one harmless call (so a bad setup fails now, not next Monday):
    ```bash
    python setup.py
    ```
@@ -121,17 +126,18 @@ only its path is configured. Keep it `chmod 600` and outside the repo.
 
 `install.sh` writes a `launchd` job at
 `~/Library/LaunchAgents/co.wakerobin.canoe.sync.plist` that runs **`run_sync.sh` every
-Monday at 07:00 local time**. `run_sync.sh` reads the configuration from the Keychain,
-exports it to the environment, and runs `canoe_sync.py`.
+Monday at 07:00 local time**. `run_sync.sh` reads the configuration from the local
+secrets file, exports it to the environment (line-by-line, never `source`/`eval`), and
+runs `canoe_sync.py`.
 
 - Disable:  `launchctl unload ~/Library/LaunchAgents/co.wakerobin.canoe.sync.plist`
 - Run now:  `launchctl start co.wakerobin.canoe.sync`
 - The job fires only while the Mac is on/awake; if asleep at 07:00 it runs at next wake.
   Keep the App Server powered on.
 
-> Keychain access from a scheduled job requires the App Server user's login session to
-> be active (the login keychain unlocked). On an always-logged-in App Server this is the
-> normal state.
+> Because secrets are in a mode-600 file (not the login keychain), the job runs
+> correctly after an unattended reboot with no interactive login — no keychain unlock
+> is required.
 
 ---
 
@@ -159,8 +165,8 @@ names each failure with its document id.
 ```
 canoe-docs/
 ├── install.sh                # Installer: venv + deps + launchd job
-├── setup.py                  # Credential wizard: prompts -> Keychain, validates Graph
-├── run_sync.sh               # What the scheduler runs weekly (Keychain -> env -> canoe_sync)
+├── setup.py                  # Credential wizard: prompts -> secrets file, validates Graph
+├── run_sync.sh               # What the scheduler runs weekly (secrets file -> env -> canoe_sync)
 ├── .env.example              # Every config key, empty (reference only)
 ├── requirements.txt
 └── py files/
@@ -186,9 +192,19 @@ cd "py files"
 ../.venv/bin/python canoe_sync.py             # incremental sync (same as the weekly job)
 ../.venv/bin/python canoe_sync.py --full      # reconsider all documents (skips those in the manifest)
 ../.venv/bin/python canoe_sync.py --local-dest ~/Desktop/Canoe --full   # backfill to a LOCAL folder
+../.venv/bin/python canoe_sync.py --export inventory.csv                # live SharePoint inventory (with doc_id)
+../.venv/bin/python canoe_sync.py --seed --seed-out DIR                 # seed manifest+last_sync for a fresh install
 ```
+
+**Discovery is chunked.** Canoe's `/v1/documents/data` times out on multi-year spans, so
+`discover()` walks month-by-month (halving any month that still times out down to days).
+A first-run full discovery works without manual chunking.
+
+**Inventory (`--export`).** Lists what is *actually* in the SharePoint library via Graph
+(not a local mirror, which can diverge) and annotates each row with the Canoe `doc_id`
+from the manifest, flagging any manifest entry missing from the live library.
 (For a manual run outside `run_sync.sh`, the environment must carry the config — either
-export it, or run via `run_sync.sh` which loads it from the Keychain.)
+export it, or run via `run_sync.sh` which loads it from the secrets file.)
 
 **Local backfill (`--local-dest`).** Writes files to a local folder in the same
 `Fund/Year/Category` structure instead of uploading — useful for a first backfill or a
