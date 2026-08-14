@@ -23,6 +23,7 @@ Microsoft Graph / SharePoint (app-only certificate auth):
 Runtime:
   CANOE_MANIFEST_PATH      Manifest JSON path (default: <repo>/.state/manifest.json)
   CANOE_LOG_DIR            Directory for per-run logs (default: <repo>/logs)
+  CANOE_TRACKER_DIR        Statement-tracker staging/state dir (default: <data>/statement_tracker)
 
 Canoe API credentials are read separately by canoe_auth.py
 (CANOE_CLIENT_ID / CANOE_CLIENT_SECRET, or CANOE_USERNAME / CANOE_PASSWORD).
@@ -130,6 +131,17 @@ def runs_path() -> str:
     rest of the runtime state, never in the repo or a synced folder.
     """
     return get("CANOE_RUNS_PATH", default=os.path.join(data_dir(), "runs.jsonl"))
+
+
+def tracker_dir() -> str:
+    """Local staging/working dir for the statement tracker in --graph mode.
+
+    The tracker's writers all emit real files, so a run builds its outputs here and
+    then uploads them to SharePoint. This also holds the tracker's own runtime state
+    (metadata cache, digest state) which -- like the manifest -- must stay on local
+    disk. Mirrors the SharePoint layout: <dir>/_statement_tracker/[backend/].
+    """
+    return get("CANOE_TRACKER_DIR", default=os.path.join(data_dir(), "statement_tracker"))
 
 
 def resync_status_path() -> str:

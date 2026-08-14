@@ -3,8 +3,8 @@
 dashboard.py -- Lightweight local admin dashboard for the Canoe -> SharePoint sync.
 
 A single-purpose Flask app that reads the SAME runtime state the scheduled sync writes
-(manifest.json, runs.jsonl) so nobody has to dig through JSON or log files. It binds to
-localhost only and is meant to run on the App Server (or via an SSH tunnel to it).
+(manifest.json, runs.jsonl) so nobody has to dig through JSON or log files. It defaults
+to localhost but can be exposed to the tailnet; only the Resync action requires auth.
 
 There is deliberately ONE source of truth for "what's been synced": the manifest, keyed
 on the Canoe document id, verified against what is *actually* in SharePoint via the live
@@ -31,11 +31,15 @@ Run:
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
-import signal
+import secrets
 import subprocess
 import sys
+import threading
+import time
 from datetime import datetime, timezone
 
 try:
@@ -48,6 +52,17 @@ from manifest import Manifest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 app = Flask(__name__)
+RESYNC_AUTH_TTL_SECONDS = 120
+_resync_tokens: dict[str, int] = {}
+_resync_tokens_lock = threading.Lock()
+
+
+def _resync_secret() -> str:
+    return os.environ.get("CANOE_RESYNC_SECRET", "")
+
+
+def _token_digest(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 # -- data access ---------------------------------------------------------------
@@ -151,6 +166,39 @@ def _read_resync_status() -> dict | None:
         return None
 
 
+@app.post("/api/resync/challenge")
+def api_resync_challenge():
+    """Issue a short-lived, one-use token after checking the shared secret."""
+    expected = _resync_secret()
+    if not expected:
+        return jsonify({"error": "Resync authentication is not configured."}), 503
+    body = request.get_json(silent=True) or {}
+    supplied = body.get("secret")
+    if not isinstance(supplied, str) or not hmac.compare_digest(supplied, expected):
+        return jsonify({"error": "Incorrect Resync secret."}), 401
+    now = int(time.time())
+    token = secrets.token_urlsafe(32)
+    with _resync_tokens_lock:
+        expired = [digest for digest, expires in _resync_tokens.items() if expires < now]
+        for digest in expired:
+            del _resync_tokens[digest]
+        _resync_tokens[_token_digest(token)] = now + RESYNC_AUTH_TTL_SECONDS
+    return jsonify({
+        "authorized": True,
+        "token": token,
+        "expires_in": RESYNC_AUTH_TTL_SECONDS,
+    })
+
+
+def _consume_resync_authorization() -> bool:
+    token = request.headers.get("X-Resync-Token", "")
+    if not token:
+        return False
+    with _resync_tokens_lock:
+        authorized_until = _resync_tokens.pop(_token_digest(token), 0)
+    return authorized_until >= int(time.time())
+
+
 @app.get("/api/status")
 def api_status():
     st = _read_resync_status()
@@ -187,6 +235,8 @@ def api_status():
 @app.post("/api/resync")
 def api_resync():
     """Guarded full resync: archive the SharePoint root, clear state, launch --full."""
+    if not _consume_resync_authorization():
+        return jsonify({"error": "Re-enter the Resync secret before starting."}), 401
     body = request.get_json(silent=True) or {}
     if body.get("confirm") != "RESYNC":
         return jsonify({"error": "Confirmation required: send {\"confirm\": \"RESYNC\"}."}), 400
@@ -274,8 +324,8 @@ PAGE = r"""<!doctype html>
   .stat { background:var(--chip); border-radius:8px; padding:10px 14px; min-width:120px; }
   .stat b { display:block; font-size:20px; }
   .stat span { color:var(--muted); font-size:12px; }
-  input[type=text] { background:var(--bg); border:1px solid var(--line); color:var(--fg);
-                     border-radius:8px; padding:8px 12px; width:320px; max-width:100%; }
+  input[type=text], input[type=password] { background:var(--bg); border:1px solid var(--line); color:var(--fg);
+                                         border-radius:8px; padding:8px 12px; width:320px; max-width:100%; }
   table { width:100%; border-collapse:collapse; font-size:13px; }
   th, td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
   th { color:var(--muted); font-weight:600; position:sticky; top:0; background:var(--panel); cursor:pointer; }
@@ -389,9 +439,11 @@ PAGE = r"""<!doctype html>
             re-uploads every document. At Canoe's ~60 calls/min limit, a full library (~9,800 docs)
             takes <b>a few hours</b>.</li>
       </ol>
-      <p>Type <span class="mono">RESYNC</span> to confirm, then start.</p>
+      <p>Type <span class="mono">RESYNC</span> and re-enter the shared Resync secret. The secret
+         authorizes this action only and is consumed immediately.</p>
       <div class="row" style="align-items:center;">
         <input type="text" id="confirmBox" placeholder="RESYNC" autocomplete="off">
+        <input type="password" id="resyncSecret" placeholder="Resync secret" autocomplete="current-password">
         <button class="btn danger" id="resyncBtn" disabled>Archive &amp; start full resync</button>
       </div>
       <p class="muted" id="resyncMsg" style="margin-bottom:0;"></p>
@@ -485,18 +537,30 @@ $('#recRun').onclick = async () => {
 };
 
 // -- resync --
-$('#confirmBox').oninput = e => $('#resyncBtn').disabled = (e.target.value !== 'RESYNC');
+function updateResyncButton() {
+  $('#resyncBtn').disabled = $('#confirmBox').value !== 'RESYNC' || !$('#resyncSecret').value;
+}
+$('#confirmBox').oninput = updateResyncButton;
+$('#resyncSecret').oninput = updateResyncButton;
 $('#resyncBtn').onclick = async () => {
   $('#resyncBtn').disabled = true; $('#resyncMsg').textContent = 'Starting…';
   try {
-    const r = await fetch('api/resync', {method:'POST', headers:{'Content-Type':'application/json'},
+    const auth = await fetch('api/resync/challenge', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({secret:$('#resyncSecret').value})
+    });
+    $('#resyncSecret').value = '';
+    const authData = await auth.json();
+    if (!auth.ok) throw new Error(authData.error || ('HTTP '+auth.status));
+    const r = await fetch('api/resync', {method:'POST',
+      headers:{'Content-Type':'application/json', 'X-Resync-Token':authData.token},
       body: JSON.stringify({confirm:'RESYNC'})});
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || ('HTTP '+r.status));
     $('#resyncMsg').textContent = `Archived to "${d.archive_name}". Full resync running (pid ${d.pid}).`;
     $('#confirmBox').value = '';
     pollStatus();
-  } catch (e) { $('#resyncMsg').textContent = 'Error: ' + e.message; $('#resyncBtn').disabled = false; }
+  } catch (e) { $('#resyncMsg').textContent = 'Error: ' + e.message; updateResyncButton(); }
 };
 async function pollStatus() {
   let d; try { d = await (await fetch('api/status')).json(); } catch { return; }
@@ -524,14 +588,16 @@ loadManifest();
 
 def main() -> None:
     port = int(os.environ.get("CANOE_DASHBOARD_PORT", "8765"))
-    # Bind to localhost only: this is an admin surface (it can trigger a resync) and must
-    # not be exposed on the network. Reach it from another machine via an SSH tunnel.
+    # Default to localhost; deployments may set this to a tailnet-reachable address.
+    # Read-only views stay open, while Resync has its own short-lived authorization.
     host = os.environ.get("CANOE_DASHBOARD_HOST", "127.0.0.1")
     try:
         data_dir = config.data_dir()
     except Exception:  # noqa: BLE001
         data_dir = "(unset)"
     print(f"Canoe sync dashboard on http://{host}:{port}  (data dir: {data_dir})")
+    if not _resync_secret():
+        print("WARNING: CANOE_RESYNC_SECRET is unset; viewing works, but Resync is disabled.")
     app.run(host=host, port=port, debug=False)
 
 

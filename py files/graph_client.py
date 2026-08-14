@@ -36,6 +36,14 @@ CHUNK = 320 * 1024 * 32                       # ~10 MiB, a multiple of 320 KiB (
 MAX_RETRIES = 5
 DEFAULT_BACKOFF = 10
 
+# Folders under the root that hold tooling output rather than synced Canoe documents.
+# list_files() hides them, because its callers (the dashboard's reconcile, canoe_sync
+# --export) treat any live file with no manifest entry as an orphan -- and the statement
+# tracker's grids, which are generated here rather than pulled from Canoe, would
+# otherwise show up as a forever-growing list of orphans. Keep in step with
+# statement_tracker.SUBDIR (asserted there).
+NON_DOCUMENT_FOLDERS = {"_statement_tracker"}
+
 
 class GraphError(RuntimeError):
     pass
@@ -127,18 +135,37 @@ class GraphClient:
     def list_files(self) -> list[dict]:
         """Recursively list every file actually in <root_folder> in the live library.
 
-        Returns [{"path": <path relative to root_folder>, "name", "size", "item_id"}].
-        This is the authoritative "what's really in SharePoint" view -- use it for
-        inventory/reconciliation rather than a local mirror, which can diverge.
+        Returns [{"path": <path relative to root_folder>, "name", "size", "item_id",
+        "web_url"}]. This is the authoritative "what's really in SharePoint" view --
+        use it for inventory/reconciliation rather than a local mirror, which can diverge.
+
+        Tooling-output folders (NON_DOCUMENT_FOLDERS) are excluded: this answers "which
+        Canoe documents are in the library", which is what reconciliation compares
+        against the manifest.
+        """
+        return self.list_tree(skip=NON_DOCUMENT_FOLDERS)["files"]
+
+    def list_tree(self, skip: set | None = None) -> dict:
+        """Recursively list <root_folder>, returning both files and folders.
+
+        Returns {"files": [...], "folders": [...]}; folder entries carry the same
+        keys as files minus "size". Both include "web_url" -- the item's real
+        SharePoint URL, which is the only reliable way to build a link (the library's
+        URL segment is not its display name: "Documents" lives at /Shared Documents).
+
+        `skip` is a set of top-level folder names not to descend into; the statement
+        tracker passes its own output folder so a run never indexes its own outputs.
         """
         drive = self.drive_id()
         root = self._root_folder
-        results: list[dict] = []
+        skip = skip or set()
+        files: list[dict] = []
+        folders: list[dict] = []
         stack = [root] if root else [""]
         while stack:
             folder = stack.pop()
             addr = "root" if not folder else f"root:/{folder}:"
-            url = f"{GRAPH}/drives/{drive}/{addr}/children?$top=200&$select=name,size,id,folder,file"
+            url = f"{GRAPH}/drives/{drive}/{addr}/children?$top=200&$select=name,size,id,folder,file,webUrl"
             while url:
                 r = self._request("GET", url)
                 if r.status_code == 404:
@@ -148,14 +175,84 @@ class GraphClient:
                 data = r.json()
                 for item in data.get("value", []):
                     child = f"{folder}/{item['name']}" if folder else item["name"]
+                    rel = child[len(root) + 1:] if root and child.startswith(root + "/") else child
+                    entry = {"path": rel, "name": item["name"], "item_id": item["id"],
+                             "web_url": item.get("webUrl", "")}
                     if "folder" in item:
-                        stack.append(child)
+                        folders.append(entry)
+                        if rel not in skip:
+                            stack.append(child)
                     else:
-                        rel = child[len(root) + 1:] if root and child.startswith(root + "/") else child
-                        results.append({"path": rel, "name": item["name"],
-                                        "size": item.get("size", 0), "item_id": item["id"]})
+                        files.append({**entry, "size": item.get("size", 0)})
                 url = data.get("@odata.nextLink")
-        return results
+        return {"files": files, "folders": folders}
+
+    def list_folder(self, rel_folder: str) -> list[dict]:
+        """Non-recursive listing of <root_folder>/<rel_folder>; [] if absent.
+
+        Entries carry "name", "path", "item_id", "web_url" and "is_folder".
+        """
+        drive = self.drive_id()
+        folder = "/".join(p for p in [self._root_folder, rel_folder.strip("/")] if p)
+        addr = "root" if not folder else f"root:/{folder}:"
+        url = f"{GRAPH}/drives/{drive}/{addr}/children?$top=200&$select=name,size,id,folder,file,webUrl"
+        out: list[dict] = []
+        rel = rel_folder.strip("/")
+        while url:
+            r = self._request("GET", url)
+            if r.status_code == 404:
+                return out
+            if r.status_code != 200:
+                raise GraphError(f"Listing '{folder}' failed: {r.status_code} {r.text[:200]}")
+            data = r.json()
+            for item in data.get("value", []):
+                out.append({"name": item["name"],
+                            "path": f"{rel}/{item['name']}" if rel else item["name"],
+                            "item_id": item["id"], "web_url": item.get("webUrl", ""),
+                            "is_folder": "folder" in item, "size": item.get("size", 0)})
+            url = data.get("@odata.nextLink")
+        return out
+
+    # -- download -----------------------------------------------------------
+    def download(self, rel_path: str) -> bytes | None:
+        """Fetch <root_folder>/<rel_path> as bytes; None if it does not exist.
+
+        Used for state a person is expected to edit in SharePoint (the tracker's
+        schedule workbook): the live copy must win over any stale local one.
+        """
+        drive = self.drive_id()
+        path = "/".join(p for p in [self._root_folder, rel_path.strip("/")] if p)
+        r = self._request("GET", f"{GRAPH}/drives/{drive}/root:/{path}:/content")
+        if r.status_code == 404:
+            return None
+        if r.status_code not in (200, 206):
+            raise GraphError(f"Download failed for {path}: {r.status_code} {r.text[:200]}")
+        return r.content
+
+    # -- move ---------------------------------------------------------------
+    def move(self, rel_path: str, dest_rel_folder: str, new_name: str | None = None) -> None:
+        """Move <root_folder>/<rel_path> into <root_folder>/<dest_rel_folder>.
+
+        A PATCH on parentReference relocates the item in place -- no download and
+        re-upload, so the item id (and anyone's link to it) survives. `new_name`
+        renames as part of the same move; callers that care about collisions pass a
+        name they have already checked against the destination listing, because a
+        move onto an existing name fails rather than silently overwriting.
+        """
+        self.ensure_folder(dest_rel_folder)
+        drive = self.drive_id()
+        src = "/".join(p for p in [self._root_folder, rel_path.strip("/")] if p)
+        dest = "/".join(p for p in [self._root_folder, dest_rel_folder.strip("/")] if p)
+        r = self._request("GET", f"{GRAPH}/drives/{drive}/root:/{dest}:?$select=id")
+        if r.status_code != 200:
+            raise GraphError(f"Cannot resolve destination folder '{dest}': {r.status_code} {r.text[:200]}")
+        body: dict = {"parentReference": {"id": r.json()["id"]}}
+        if new_name:
+            body["name"] = new_name
+        r = self._request("PATCH", f"{GRAPH}/drives/{drive}/root:/{src}:",
+                          headers={"Content-Type": "application/json"}, json=body)
+        if r.status_code not in (200, 201):
+            raise GraphError(f"Move of '{src}' -> '{dest}' failed: {r.status_code} {r.text[:200]}")
 
     @property
     def root_folder(self) -> str:

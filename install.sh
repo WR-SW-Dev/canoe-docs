@@ -11,7 +11,7 @@
 #
 # What it does:
 #   1. Creates the Python virtualenv and installs dependencies.
-#   2. Generates the launchd weekly job (Mondays 7am) that runs run_sync.sh.
+#   2. Installs the system launchd weekly job (Mondays 7am) that runs run_sync.sh as dev.
 # It does NOT load the job or touch credentials -- see the printed next steps.
 
 set -e
@@ -26,16 +26,20 @@ echo "  venv ready: $BASE/.venv"
 
 # Runtime state (manifest, logs, last-run) lives on LOCAL disk, not in the repo.
 DATA_DIR="${CANOE_DATA_DIR:-$HOME/Library/Application Support/canoe-sync}"
-mkdir -p "$HOME/Library/LaunchAgents" "$DATA_DIR/logs"
+mkdir -p "$DATA_DIR/logs"
 echo "  data dir  : $DATA_DIR"
-PLIST="$HOME/Library/LaunchAgents/co.wakerobin.canoe.sync.plist"
-cat > "$PLIST" <<EOF
+PLIST="/Library/LaunchDaemons/co.wakerobin.canoe.sync.plist"
+TMP_PLIST="$(mktemp "${TMPDIR:-/tmp}/co.wakerobin.canoe.sync.XXXXXX")"
+trap 'rm -f "$TMP_PLIST"' EXIT
+cat > "$TMP_PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
     <string>co.wakerobin.canoe.sync</string>
+    <key>UserName</key>
+    <string>dev</string>
     <key>ProgramArguments</key>
     <array>
         <string>/bin/zsh</string>
@@ -53,6 +57,7 @@ cat > "$PLIST" <<EOF
 </dict>
 </plist>
 EOF
+sudo install -o root -g wheel -m 0644 "$TMP_PLIST" "$PLIST"
 echo "  launchd job written: $PLIST"
 
 cat <<NEXT
@@ -69,9 +74,10 @@ Install steps complete. Remaining manual steps:
        cd "$BASE/py files" && ../.venv/bin/python credentials_check.py
 
   4. Schedule the weekly sync:
-       launchctl load -w "$PLIST"
+       sudo launchctl load -w "$PLIST"
      Test it immediately (optional):
-       launchctl start co.wakerobin.canoe.sync && tail -30 "$BASE/logs/run_sync.log"
+       sudo launchctl start co.wakerobin.canoe.sync
+       tail -30 "$DATA_DIR/logs/run_sync.log"
 
   5. (Optional) Launch the local admin dashboard (manifest / runs / reconcile / resync),
      bound to 127.0.0.1 only:

@@ -21,7 +21,9 @@ credentials onto the machine (encrypted email / password manager) is a human ste
 
 from __future__ import annotations
 
+import argparse
 import os
+import secrets
 import sys
 from getpass import getpass
 
@@ -50,6 +52,10 @@ CANOE_FIELDS = [
     ("CANOE_USERNAME", "Canoe service-account username (fallback; optional)", False, ""),
     ("CANOE_PASSWORD", "Canoe service-account password (fallback; optional)", True, ""),
     ("CANOE_ORGANIZATION_ID", "Canoe organization id (only if multiple orgs; optional)", False, ""),
+]
+RESYNC_FIELDS = [
+    ("CANOE_RESYNC_SECRET", "Shared secret required immediately before a dashboard Resync",
+     True, secrets.token_urlsafe(32)),
 ]
 
 
@@ -100,13 +106,32 @@ def prompt_group(title: str, fields) -> dict:
     return out
 
 
+def rotate_resync_secret() -> str:
+    value = secrets.token_urlsafe(32)
+    write_secrets({"CANOE_RESYNC_SECRET": value})
+    return value
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Configure the Canoe sync")
+    parser.add_argument(
+        "--rotate-resync-secret",
+        action="store_true",
+        help="generate, save, and print only a new dashboard Resync secret",
+    )
+    args = parser.parse_args()
+    if args.rotate_resync_secret:
+        print("New dashboard Resync secret (save in 1Password):")
+        print(f"  {rotate_resync_secret()}")
+        return
+
     print("Canoe -> SharePoint sync -- configuration")
     print(f"Values are stored in {SECRETS_FILE} (mode 600); nothing is written to the repo.")
 
     values = {}
     values.update(prompt_group("Microsoft Graph / SharePoint:", GRAPH_FIELDS))
     values.update(prompt_group("Canoe API (Client ID + Secret, and/or username + password):", CANOE_FIELDS))
+    values.update(prompt_group("Dashboard Resync authorization:", RESYNC_FIELDS))
 
     have_client = values.get("CANOE_CLIENT_ID") and values.get("CANOE_CLIENT_SECRET")
     have_pw = values.get("CANOE_USERNAME") and values.get("CANOE_PASSWORD")
@@ -116,6 +141,8 @@ def main() -> None:
 
     write_secrets(values)
     print(f"\nSaved {len(values)} value(s) to {SECRETS_FILE}.")
+    print("\nSave this dashboard Resync secret in 1Password:")
+    print(f"  {values['CANOE_RESYNC_SECRET']}")
 
     # Validate Graph credentials with one harmless call.
     print("\nValidating Microsoft Graph access (resolving the target library)...")

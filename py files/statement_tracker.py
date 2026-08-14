@@ -19,25 +19,42 @@ How it works
    a grace period in days after period end.
 3. Reconcile: for each tracked fund and each period since tracking start,
    decide Received / Pending / OVERDUE / Review.
-4. Write outputs beside the archive (SharePoint-synced, team-visible):
-   - _statement_tracker/Statement Tracker.xlsx  -- THE team grid: green = received,
-     red = not; one sheet per cadence. The only file in the folder.
+4. Write outputs into the archive's _statement_tracker/ folder (team-visible):
+   - _statement_tracker/Statement Tracker <date>.xlsx  -- THE team grid: green =
+     received, red = not; one sheet per cadence. The only grid in the folder;
+     previous ones are swept into Archive/.
    - _statement_tracker/backend/               -- supporting detail: HTML status
-     dashboard, status/received CSVs, the editable schedule workbook
-     (statement_schedule.xlsx), and the metadata cache.
+     dashboard, status/received CSVs, and the editable schedule workbook
+     (statement_schedule.xlsx).
 
 Canoe review flags never auto-confirm a period: a document whose status is not
 Complete routes to the Review column instead of silently satisfying the period.
 
+Two destinations
+----------------
+--graph  (what the weekly job runs) reads the archive inventory from SharePoint via
+         Microsoft Graph and uploads the outputs there. Needs no synced folder, so it
+         works on an unattended server. Outputs are built in a local staging dir
+         (CANOE_TRACKER_DIR) first; the metadata cache and digest state stay there,
+         since runtime state never belongs in the synced library.
+--dest   points at a LOCAL archive root (an OneDrive-synced 'Canoe' folder) and writes
+         outputs into it directly. This was the original mode, kept for ad-hoc local
+         runs against a synced copy.
+
+The grid's hyperlinks follow the destination: relative paths for --dest, absolute
+SharePoint item URLs for --graph.
+
 Usage:
-  python statement_tracker.py --dest "$CANOE_ARCHIVE_DIR"            # weekly
-  python statement_tracker.py --dest "$CANOE_ARCHIVE_DIR" --refresh full
+  python statement_tracker.py --graph                                # weekly job
+  python statement_tracker.py --graph --refresh full
+  python statement_tracker.py --dest "$CANOE_ARCHIVE_DIR"            # local archive
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import html
 import json
 import os
@@ -55,6 +72,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.worksheet.datavalidation import DataValidation
 
 import canoe_auth
+import config
 
 DATA_URL = "https://api.canoesoftware.com/v1/documents/data"
 PAGE_LIMIT = 100
@@ -253,18 +271,18 @@ def parse_date(s: str | None) -> date | None:
         return None
 
 
-def merrill_stems(dest: str) -> frozenset:
-    """Lowercase file stems (dedup __N suffix stripped) of everything routed to
-    Merrill/. canoe_route.py puts custodian statements there after verifying
-    the PDF text locally; the tracker trusts that folder as the exclusion list.
+def _stem(filename: str) -> str:
+    """Lowercase file stem with the dedup __N suffix stripped."""
+    return re.sub(r"__\d+$", "", os.path.splitext(filename)[0]).lower()
+
+
+def merrill_stems(inventory: list[dict]) -> frozenset:
+    """Stems of everything routed to Merrill/. canoe_route.py puts custodian
+    statements there after verifying the PDF text locally; the tracker trusts
+    that folder as the exclusion list.
     """
-    stems = set()
-    merrill_dir = os.path.join(dest, "Merrill")
-    for root, _dirs, files in os.walk(merrill_dir):
-        for f in files:
-            if not f.startswith("."):
-                stems.add(re.sub(r"__\d+$", "", os.path.splitext(f)[0]).lower())
-    return frozenset(stems)
+    return frozenset(_stem(f["name"]) for f in inventory
+                     if f["path"].split("/")[0] == "Merrill" and not f["name"].startswith("."))
 
 
 def statement_rows(docs: list[dict], types_by_fund: dict,
@@ -845,33 +863,51 @@ def _sanitize(component: str) -> str:
     return component.strip().strip(".") or "Unfiled"
 
 
-def build_archive_index(dest: str) -> dict[str, str]:
-    """Map lowercase file stem (dedup __N suffix stripped) -> archive relpath."""
-    index: dict[str, str] = {}
-    for root, dirs, files in os.walk(dest):
+def local_inventory(dest: str) -> dict:
+    """Walk a local archive root into the same shape GraphClient.list_tree returns."""
+    files, folders = [], []
+    for root, dirs, names in os.walk(dest):
         dirs[:] = [d for d in dirs if not d.startswith(".") and d != SUBDIR]
-        for f in files:
+        rel_root = os.path.relpath(root, dest)
+        prefix = "" if rel_root == "." else rel_root.replace(os.sep, "/") + "/"
+        for d in dirs:
+            folders.append({"path": prefix + d, "name": d, "web_url": ""})
+        for f in names:
             if f.startswith(".") or f.startswith("~$"):
                 continue
-            base = re.sub(r"__\d+$", "", os.path.splitext(f)[0]).lower()
-            index.setdefault(base, os.path.relpath(os.path.join(root, f), dest))
-    return index
+            files.append({"path": prefix + f, "name": f, "web_url": ""})
+    return {"files": files, "folders": folders}
 
 
-def _file_link(rec: dict, index: dict[str, str], dest: str) -> str | None:
-    """Relative hyperlink (from the workbook's folder) to the statement file,
-    falling back to the fund's archive folder."""
-    rel = index.get((rec.get("doc_name") or "").lower())
-    if rel is None:
-        folder = _sanitize(rec["investment"])
-        if os.path.isdir(os.path.join(dest, folder)):
-            rel = folder
-        else:
+class ArchiveLinks:
+    """Resolves the hyperlink for a statement from an inventory of the archive.
+
+    Two link flavours, one per destination: a path relative to the workbook's own
+    folder (local archive, where the workbook sits inside the tree), or the item's
+    absolute SharePoint URL (--graph, where the workbook is uploaded and a relative
+    path would mean nothing to Excel). Falls back to the fund's folder when the
+    document itself is not in the archive.
+    """
+
+    def __init__(self, inventory: dict, *, web: bool):
+        self._web = web
+        self._files: dict[str, dict] = {}
+        for f in inventory["files"]:
+            self._files.setdefault(_stem(f["name"]), f)
+        self._folders = {d["path"]: d for d in inventory["folders"]}
+
+    def url(self, rec: dict) -> str | None:
+        item = self._files.get((rec.get("doc_name") or "").lower())
+        if item is None:
+            item = self._folders.get(_sanitize(rec["investment"]))
+        if item is None:
             return None
-    return "../" + urllib.parse.quote(rel.replace(os.sep, "/"))
+        if self._web:
+            return item["web_url"] or None
+        return "../" + urllib.parse.quote(item["path"])
 
 
-def write_xlsx(path: str, recs: list[dict], dest: str) -> None:
+def write_xlsx(path: str, recs: list[dict], links: ArchiveLinks) -> None:
     """Simple received grid: one sheet per cadence, one row per fund, one column
     per period. Green = a statement for that period is in Canoe (click to open
     it), red = expected but not received, blank = not tracked for that period."""
@@ -880,7 +916,6 @@ def write_xlsx(path: str, recs: list[dict], dest: str) -> None:
     amber = PatternFill("solid", fgColor="FFD966")
     thin = Border(*[Side(style="thin", color="D9D9D9")] * 4)
     center = Alignment(horizontal="center")
-    index = build_archive_index(dest)
 
     # NB: labels must not start with "=" or Excel treats them as formulas (#NAME?).
     LEGEND = [(green, 'Received -- click "Link" to open the statement'),
@@ -897,7 +932,7 @@ def write_xlsx(path: str, recs: list[dict], dest: str) -> None:
     def paint(c, rec):
         if rec["status"] == "retag":
             c.fill = amber
-            link = _file_link(rec, index, dest)   # rec carries the untagged doc
+            link = links.url(rec)                 # rec carries the untagged doc
             if link:
                 c.value = "Tag"
                 c.hyperlink = link
@@ -905,7 +940,7 @@ def write_xlsx(path: str, recs: list[dict], dest: str) -> None:
                 c.alignment = center
         elif int(rec["n_docs"] or 0) > 0:
             c.fill = green
-            link = _file_link(rec, index, dest)
+            link = links.url(rec)
             if link:
                 # Give the cell display text, otherwise Excel renders the raw URL.
                 c.value = "Link"
@@ -1106,36 +1141,186 @@ def archive_old_grids(outdir: str) -> None:
         print(f"  archived    : {f} -> {ARCHIVE}/{os.path.basename(target)}")
 
 
+def _digest(path: str) -> str | None:
+    """Content hash of a file, or None if absent. Used to tell whether a run actually
+    changed the schedule workbook -- an mtime would also trip on a no-op rewrite."""
+    if not os.path.exists(path):
+        return None
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _free_name(name: str, taken: set) -> str:
+    """`name`, or name__2/__3/... -- the first variant not already in `taken`."""
+    if name not in taken:
+        return name
+    root, ext = os.path.splitext(name)
+    n = 2
+    while f"{root}__{n}{ext}" in taken:
+        n += 1
+    return f"{root}__{n}{ext}"
+
+
+# --------------------------------------------------------------------------- #
+# SharePoint destination (--graph)
+# --------------------------------------------------------------------------- #
+
+class GraphDest:
+    """The tracker's SharePoint destination, reached through Microsoft Graph.
+
+    The Graph pipeline uploads documents straight to SharePoint, so there is no
+    local mirror of the archive to write beside or walk. This class supplies what
+    `--dest` used to: the archive inventory (for the Merrill exclusion list and the
+    grid's hyperlinks) and somewhere to put the outputs.
+
+    Outputs are BUILT in a local staging dir and then uploaded, because every writer
+    here emits a real file. Two staged files deliberately never leave that dir -- the
+    metadata cache and the digest state are runtime state, which this project keeps on
+    local disk, never in the synced library.
+    """
+
+    def __init__(self, staging: str):
+        import graph_client                       # imported lazily: local mode needs no Graph creds
+        # The document-inventory callers (dashboard reconcile, canoe_sync --export) hide
+        # this folder so its grids are not reported as orphaned documents. If the two
+        # names ever drift apart that hiding silently stops working, so pin it here.
+        assert SUBDIR in graph_client.NON_DOCUMENT_FOLDERS, \
+            f"{SUBDIR!r} must be listed in graph_client.NON_DOCUMENT_FOLDERS"
+        self.gc = graph_client.GraphClient()
+        self.staging = staging
+        self.outdir = os.path.join(staging, SUBDIR)
+        self.backend = os.path.join(self.outdir, BACKEND)
+        os.makedirs(self.backend, exist_ok=True)
+        sp = config.sharepoint()
+        self.label = f"{sp['hostname']}{sp['site_path']}/{sp['library']}/{self.gc.root_folder}/{SUBDIR}"
+
+    def inventory(self) -> dict:
+        """Live listing of the archive, skipping the tracker's own output folder."""
+        return self.gc.list_tree(skip={SUBDIR})
+
+    def pull_schedule(self) -> bool:
+        """Fetch the team-editable schedule workbook into staging. True if present.
+
+        The live copy always wins: somebody may have edited frequencies or grace
+        days in SharePoint since the last run, and a stale local copy would silently
+        revert their work.
+        """
+        data = self.gc.download(f"{SUBDIR}/{BACKEND}/{SCHEDULE_FILE}")
+        path = os.path.join(self.backend, SCHEDULE_FILE)
+        if data is None:
+            if os.path.exists(path):
+                print(f"  schedule    : not in SharePoint yet; using staged copy")
+                return True
+            return False
+        with open(path, "wb") as f:
+            f.write(data)
+        print(f"  schedule    : pulled {len(data):,} bytes from SharePoint")
+        return True
+
+    def archive_old_grids(self) -> None:
+        """Move previous grid workbooks into Archive/ inside SharePoint.
+
+        A move (PATCH parentReference) keeps each workbook's item id, so links people
+        have saved to an older grid keep resolving after it is archived.
+        """
+        current = [f for f in self.gc.list_folder(SUBDIR)
+                   if not f["is_folder"] and f["name"].startswith(GRID_PREFIX)
+                   and f["name"].endswith(".xlsx")]
+        if not current:
+            return
+        taken = {f["name"] for f in self.gc.list_folder(f"{SUBDIR}/{ARCHIVE}")}
+        for f in sorted(current, key=lambda x: x["name"]):
+            target = _free_name(f["name"], taken)
+            self.gc.move(f["path"], f"{SUBDIR}/{ARCHIVE}", target if target != f["name"] else None)
+            taken.add(target)
+            print(f"  archived    : {f['name']} -> {ARCHIVE}/{target}")
+
+    def grid_name(self, base: str) -> str:
+        """A dated grid filename not already used in SharePoint (this folder or Archive)."""
+        taken = {f["name"] for f in self.gc.list_folder(f"{SUBDIR}/{ARCHIVE}")}
+        taken |= {f["name"] for f in self.gc.list_folder(SUBDIR)}
+        name = f"{base}.xlsx"
+        n = 2
+        while name in taken:
+            name = f"{base} ({n}).xlsx"
+            n += 1
+        return name
+
+    def publish(self, names: list[tuple[str, str]]) -> None:
+        """Upload staged files. Each entry is (local path relative to outdir, purpose)."""
+        for rel, _purpose in names:
+            local = os.path.join(self.outdir, rel)
+            if not os.path.exists(local):
+                continue
+            with open(local, "rb") as f:
+                data = f.read()
+            folder = os.path.dirname(rel).replace(os.sep, "/")
+            self.gc.upload(data, f"{SUBDIR}/{folder}" if folder else SUBDIR,
+                           os.path.basename(rel))
+            print(f"  uploaded    : {rel} ({len(data):,} bytes)")
+
+
 # --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Track statements received per manager/fund.")
-    ap.add_argument("--dest", required=True,
-                    help="Archive root (the synced SharePoint 'Canoe' folder). "
-                         f"Outputs go to <dest>/{SUBDIR}/.")
+    src = ap.add_mutually_exclusive_group(required=True)
+    src.add_argument("--dest",
+                     help="Archive root as a LOCAL path (a synced SharePoint 'Canoe' folder). "
+                          f"Outputs go to <dest>/{SUBDIR}/.")
+    src.add_argument("--graph", action="store_true",
+                     help="Read the archive from SharePoint via Microsoft Graph and upload "
+                          f"outputs to <SP_ROOT_FOLDER>/{SUBDIR}/. This is what the weekly "
+                          "job uses; needs no synced folder.")
     ap.add_argument("--refresh", default="auto", choices=["auto", "full"],
                     help="auto = cached + delta by last-modified; full = re-pull everything.")
     ap.add_argument("--periods", type=int, default=13,
                     help="How many recent periods to show per grid (default 13).")
     args = ap.parse_args()
 
-    dest = os.path.abspath(os.path.expanduser(args.dest))
-    outdir = os.path.join(dest, SUBDIR)
-    backend = os.path.join(outdir, BACKEND)
-    os.makedirs(backend, exist_ok=True)
     today = date.today()
-
     print("Statement tracker")
-    print(f"  grid        : {os.path.join(outdir, GRID_PREFIX)} <date>.xlsx")
-    print(f"  backend     : {backend}")
-    migrate_layout(dest, outdir, backend)
+
+    gdest = None
+    if args.graph:
+        # Unattended weekly job: a missing key or an unreachable site should leave one
+        # readable line in the log, not a traceback.
+        try:
+            gdest = GraphDest(config.tracker_dir())
+            outdir, backend = gdest.outdir, gdest.backend
+            print(f"  destination : {gdest.label} (Graph upload)")
+            print(f"  staging     : {outdir}")
+            inventory = gdest.inventory()
+            print(f"  archive     : {len(inventory['files'])} files in the live library")
+            have_schedule = gdest.pull_schedule()
+        except config.ConfigError as exc:
+            sys.exit(f"Statement tracker: {exc}")
+        except Exception as exc:                              # noqa: BLE001 -- incl. GraphError
+            sys.exit(f"Statement tracker: SharePoint unreachable -- "
+                     f"{exc.__class__.__name__}: {exc}")
+    else:
+        dest = os.path.abspath(os.path.expanduser(args.dest))
+        outdir = os.path.join(dest, SUBDIR)
+        backend = os.path.join(outdir, BACKEND)
+        os.makedirs(backend, exist_ok=True)
+        print(f"  grid        : {os.path.join(outdir, GRID_PREFIX)} <date>.xlsx")
+        print(f"  backend     : {backend}")
+        migrate_layout(dest, outdir, backend)
+        inventory = local_inventory(dest)
+        have_schedule = os.path.exists(os.path.join(backend, SCHEDULE_FILE))
+
+    links = ArchiveLinks(inventory, web=bool(args.graph))
 
     # The schedule is read first: per-fund doc_types overrides extend which
     # document types the metadata pull must cover.
     sched_path = os.path.join(backend, SCHEDULE_FILE)
-    sched = load_schedule(sched_path) if os.path.exists(sched_path) else None
+    sched = load_schedule(sched_path) if have_schedule else None
+    sched_before = _digest(sched_path)
     overrides: dict = {}
     type_names = list(DEFAULT_STATEMENT_TYPE_NAMES)
     known = {t.lower() for t in type_names}
@@ -1151,7 +1336,7 @@ def main() -> None:
     docs = load_metadata(os.path.join(backend, CACHE_FILE), args.refresh, type_names)
     print(f"  documents   : {len(docs)} across {len(type_names)} statement types (all categories)")
 
-    routed = merrill_stems(dest)
+    routed = merrill_stems(inventory["files"])
     base_rows = statement_rows(docs, {}, routed)
     if sched is None:
         print("  no schedule found -- seeding from history "
@@ -1183,19 +1368,42 @@ def main() -> None:
     # archives the previous one, same-day reruns included. A reused filename is
     # a reused OneDrive item, and rewriting an item someone has open in Excel
     # wedges its sync; a fresh name always uploads.
-    archive_old_grids(outdir)
     base = f"{GRID_PREFIX} {today.isoformat()}"
-    archive_dir = os.path.join(outdir, ARCHIVE)
-    prior_today = sum(1 for f in os.listdir(archive_dir) if f.startswith(base)) \
-        if os.path.isdir(archive_dir) else 0
-    grid_name = f"{base}.xlsx" if prior_today == 0 else f"{base} ({prior_today + 1}).xlsx"
-    write_xlsx(os.path.join(outdir, grid_name), recs, dest)
+    if gdest:
+        gdest.archive_old_grids()
+        grid_name = gdest.grid_name(base)
+        # Staging keeps only the grid being uploaded; older ones already live in
+        # SharePoint's Archive/ and re-uploading them would undo that sweep.
+        for f in os.listdir(outdir):
+            if f.startswith(GRID_PREFIX) and f.endswith(".xlsx"):
+                os.remove(os.path.join(outdir, f))
+    else:
+        archive_old_grids(outdir)
+        archive_dir = os.path.join(outdir, ARCHIVE)
+        prior_today = sum(1 for f in os.listdir(archive_dir) if f.startswith(base)) \
+            if os.path.isdir(archive_dir) else 0
+        grid_name = f"{base}.xlsx" if prior_today == 0 else f"{base} ({prior_today + 1}).xlsx"
+    write_xlsx(os.path.join(outdir, grid_name), recs, links)
     print(f"  wrote       : {grid_name} + backend detail (html, csvs)")
 
     digest_html, new_rows = build_digest(backend, rows, recs)
     with open(os.path.join(backend, "Statement Digest.html"), "w") as f:
         f.write(digest_html)
     print(f"  digest      : {len(new_rows)} new statement(s); {email_digest(digest_html, len(new_rows))}")
+
+    if gdest:
+        # The cache and digest state stay local (runtime state); everything the team
+        # reads goes up. The schedule is re-uploaded ONLY if this run changed it, so
+        # a concurrent edit in SharePoint is not overwritten by an identical copy.
+        publish = [(grid_name, "grid"),
+                   (os.path.join(BACKEND, "Statement Tracker.html"), "status dashboard"),
+                   (os.path.join(BACKEND, "Statement Digest.html"), "digest"),
+                   (os.path.join(BACKEND, "statement_status.csv"), "status csv"),
+                   (os.path.join(BACKEND, "statement_received_log.csv"), "received log")]
+        sched_after = _digest(sched_path)
+        if sched_after is not None and sched_after != sched_before:
+            publish.append((os.path.join(BACKEND, SCHEDULE_FILE), "schedule"))
+        gdest.publish(publish)
 
 
 if __name__ == "__main__":

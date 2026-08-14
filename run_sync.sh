@@ -37,4 +37,31 @@ echo "===== sync run: $(date) =====" >> "$LOG"
 "$VENV" canoe_sync.py "$@" >> "$LOG" 2>&1
 code=$?
 echo "sync exit code: $code" >> "$LOG"
+
+# Refresh the statement tracker (Canoe metadata only -- no document bodies) and upload
+# the grid to <SP_ROOT_FOLDER>/_statement_tracker/ in the same library. Runs after the
+# document sync so the grid's links resolve against what was just uploaded.
+#
+# Deliberately not gated on the sync's exit code and deliberately not folded into this
+# script's: the tracker reads Canoe metadata, so it still produces a correct grid when
+# an upload failed, and a tracker failure must not mark the document sync as broken.
+# Both exit codes are logged separately.
+#
+# Skipped for modes that upload nothing to SharePoint -- publishing a grid from a
+# --dry-run would contradict the flag, and the others write somewhere else entirely.
+skip_tracker=0
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run|--seed|--local-dest|--local-dest=*|--export|--export=*) skip_tracker=1 ;;
+  esac
+done
+
+if (( skip_tracker )); then
+  echo "--- statement tracker: skipped (no-upload mode: $*) ---" >> "$LOG"
+else
+  echo "--- statement tracker: $(date) ---" >> "$LOG"
+  "$VENV" statement_tracker.py --graph >> "$LOG" 2>&1
+  echo "tracker exit code: $?" >> "$LOG"
+fi
+
 exit $code

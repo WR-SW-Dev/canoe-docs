@@ -25,6 +25,9 @@ registration, which is scoped so it can write only to the one Canoe SharePoint s
    in the manifest.
 3. Write a **dated log** of documents fetched, skipped, uploaded, and any errors (each
    error tagged with the document id), and **exit non-zero if any document failed**.
+4. Refresh the **statement tracker** (`statement_tracker.py --graph`) and upload the
+   received grid to `‹root›/_statement_tracker/`. Metadata only — it never opens a
+   document body. See [The statement tracker](#the-statement-tracker).
 
 **Idempotent:** a rerun on the same day skips everything already in the manifest and
 uploads with *replace* semantics, so it never duplicates a document in the library.
@@ -36,7 +39,10 @@ Distinct documents that happen to share a name are disambiguated (`… (2).pdf`)
   files use a simple PUT. On HTTP **429 / 503** the client honours `Retry-After` and
   backs off.
 
-There is deliberately **no email or Teams notification** in this application.
+The document sync itself sends **no email or Teams notification** — its output is the
+library, the log, and the exit code. The one exception is the statement tracker's
+optional digest, which is sent only when `CANOE_DIGEST_TO` and the `CANOE_SMTP_*` keys
+are set; leave them unset and nothing is emailed.
 
 ---
 
@@ -96,14 +102,15 @@ only its path is configured. Keep it `chmod 600` and outside the repo.
    `~/Library/Application Support/canoe-sync`; keep the checkout out of OneDrive too.
 2. **Place the certificate private key** on the machine (e.g. `~/secrets/canoe-graph.pem`),
    readable only by this user (`chmod 600`). Note its absolute path.
-3. **Run the installer** (creates the virtualenv, installs dependencies, generates the
-   weekly launchd job for this machine):
+3. **Run the installer** (creates the virtualenv, installs dependencies, and installs the
+   weekly system LaunchDaemon; `sudo` is requested only for the plist installation):
    ```bash
    ./install.sh
    ```
 4. **Configure credentials** — prompts in the terminal, writes to the **local secrets
    file** (`~/.config/wr-canoe-sync/secrets.env`, mode 600), and **validates Graph
-   access** with one harmless call (so a bad setup fails now, not next Monday):
+   access** with one harmless call (so a bad setup fails now, not next Monday). It also
+   generates and prints the dashboard Resync secret; save that value in 1Password:
    ```bash
    python setup.py
    ```
@@ -113,11 +120,12 @@ only its path is configured. Keep it `chmod 600` and outside the repo.
    ```
 6. **Schedule the weekly sync:**
    ```bash
-   launchctl load -w ~/Library/LaunchAgents/co.wakerobin.canoe.sync.plist
+   sudo launchctl load -w /Library/LaunchDaemons/co.wakerobin.canoe.sync.plist
    ```
    Run it once now to confirm (optional):
    ```bash
-   launchctl start co.wakerobin.canoe.sync && tail -30 logs/run_sync.log
+   sudo launchctl start co.wakerobin.canoe.sync
+   tail -30 "$HOME/Library/Application Support/canoe-sync/logs/run_sync.log"
    ```
 
 ---
@@ -166,8 +174,8 @@ sync's state. It reads the same runtime state the sync writes (`manifest.json`,
 ./run_dashboard.sh          # loads secrets -> env, serves on http://127.0.0.1:8765
 ```
 
-It binds to **localhost only** — it can trigger a full resync, so it must not be exposed
-on the network. To reach it from another machine, SSH-tunnel to the App Server:
+It binds to **localhost by default**. To reach it from another machine without changing
+the bind address, SSH-tunnel to the App Server:
 ```bash
 ssh -L 8765:127.0.0.1:8765 «app-server»    # then open http://127.0.0.1:8765 locally
 ```
@@ -183,7 +191,8 @@ Four views:
 
 ### The Resync action
 
-Behind a typed confirmation, **Resync** does a clean full rebuild of the library:
+Behind a typed confirmation and a shared-secret challenge, **Resync** does a clean full
+rebuild of the library:
 
 1. **Archives** the current SharePoint root folder in place — an in-place Graph rename to
    `‹root›_archive_‹YYYY-MM-DD›`. Nothing is deleted; every existing file moves under the
@@ -197,6 +206,13 @@ A full rebuild re-downloads and re-uploads every document; at Canoe's ~60 calls/
 limit a full library (~9,800 docs) takes **a few hours**. The confirmation guard is there
 because this is a real, consequential action — not a casual toggle.
 
+Viewing the dashboard remains unauthenticated. Immediately before Resync, the browser
+must submit `CANOE_RESYNC_SECRET`; a successful challenge creates a two-minute,
+one-use action token that is consumed by the next Resync POST. The secret is never
+placed in the page or token, and the password field is cleared after the challenge.
+Run `python setup.py --rotate-resync-secret` to rotate it and save the printed value in
+1Password.
+
 The dashboard needs the Graph configuration for **Reconcile** and **Resync**; the
 **Manifest** and **Run history** views work without it.
 
@@ -204,20 +220,75 @@ The dashboard needs the Graph configuration for **Reconcile** and **Resync**; th
 
 ## The weekly schedule
 
-`install.sh` writes a `launchd` job at
-`~/Library/LaunchAgents/co.wakerobin.canoe.sync.plist` that runs **`run_sync.sh` every
-Monday at 07:00 local time**. `run_sync.sh` reads the configuration from the local
-secrets file, exports it to the environment (line-by-line, never `source`/`eval`), and
-runs `canoe_sync.py`.
+`install.sh` installs a system `launchd` job at
+`/Library/LaunchDaemons/co.wakerobin.canoe.sync.plist`, owned by `root:wheel`, that runs
+**`run_sync.sh` as `dev` every Monday at 07:00 local time**. A LaunchDaemon is used so
+the service does not depend on any user having an active GUI/console session.
+`run_sync.sh` reads the configuration from the local secrets file, exports it to the
+environment (line-by-line, never `source`/eval`), runs `canoe_sync.py`, and then
+refreshes the statement tracker.
 
-- Disable:  `launchctl unload ~/Library/LaunchAgents/co.wakerobin.canoe.sync.plist`
-- Run now:  `launchctl start co.wakerobin.canoe.sync`
+The tracker step runs **regardless of the sync's exit code**, and its own exit code is
+logged separately without changing the job's: it reads Canoe metadata rather than the
+library, so it still produces a correct grid when an upload failed, and a tracker
+problem must not be reported as a broken document sync. Both codes appear in
+`run_sync.log`. The step is skipped for modes that upload nothing (`--dry-run`,
+`--seed`, `--local-dest`, `--export`).
+
+- Disable: `sudo launchctl unload /Library/LaunchDaemons/co.wakerobin.canoe.sync.plist`
+- Run now: `sudo launchctl start co.wakerobin.canoe.sync`
 - The job fires only while the Mac is on/awake; if asleep at 07:00 it runs at next wake.
   Keep the App Server powered on.
 
 > Because secrets are in a mode-600 file (not the login keychain), the job runs
 > correctly after an unattended reboot with no interactive login — no keychain unlock
 > is required.
+
+---
+
+## The statement tracker
+
+`statement_tracker.py` answers a different question from the sync: not "did we file this
+document" but "**which statements have not arrived yet**". It reads Canoe's structured
+metadata (fund, sponsor, data date, type, status) and reconciles it against a per-fund
+schedule of expected frequency and grace period. It never opens a document body, so it
+adds no GenAI dependency and no new data-handling surface.
+
+It runs as the second step of the weekly job and writes into the **same SharePoint
+library as the documents**, under `‹root›/_statement_tracker/`:
+
+| Path | What it is |
+| --- | --- |
+| `Statement Tracker ‹date›.xlsx` | **The team grid.** Green = received (click to open the statement), red = expected but missing, amber = arrived but not tagged to an entity in Canoe. One sheet per cadence. |
+| `Archive/` | Previous grids. Each run writes a **new dated workbook** and moves the old one here — a fresh item always syncs, whereas rewriting a workbook someone has open in Excel wedges it. Moves preserve the item id, so saved links keep working. |
+| `backend/statement_schedule.xlsx` | **Editable by the team.** One row per fund: frequency, grace days, whether to track it, optional `doc_types` override. Auto-seeded from history on the first run — review it. |
+| `backend/` (rest) | Supporting detail: HTML status dashboard, digest, status/received CSVs. |
+
+**The schedule round-trips.** Each run downloads the workbook from SharePoint before
+reconciling, so edits made there always win, and re-uploads it **only if that run
+changed it** (seeded it, or appended newly-discovered funds flagged `NEW --`). An
+unchanged schedule is never re-uploaded, so a concurrent edit is not overwritten.
+
+Outputs are built in a local staging dir (`CANOE_TRACKER_DIR`, default
+`‹data›/statement_tracker`) and then uploaded. The **metadata cache and digest state stay
+there** — like the manifest, they are runtime state and do not belong in a synced library.
+
+The tracker folder is excluded from the document inventories used by the dashboard's
+**Reconcile** and `canoe_sync --export`; otherwise every grid would be reported as an
+orphan with no manifest entry.
+
+Two destinations:
+
+```bash
+cd "py files"
+../.venv/bin/python statement_tracker.py --graph                  # what the weekly job runs
+../.venv/bin/python statement_tracker.py --graph --refresh full   # re-pull all metadata
+../.venv/bin/python statement_tracker.py --dest /path/to/Canoe    # a LOCAL synced archive
+```
+
+`--graph` needs no synced folder, which is why the scheduled job uses it. `--dest` writes
+into a local OneDrive-synced `Canoe` folder instead, and is kept for ad-hoc local runs;
+grid hyperlinks are relative paths in that mode and absolute SharePoint URLs in `--graph`.
 
 ---
 
@@ -238,6 +309,10 @@ synced/OneDrive folder**, so the idempotency manifest cannot be corrupted by a s
   (start/end, mode, fetched/uploaded/skipped/error counts, duration, exit code). Written
   automatically by each run; read by the dashboard's **Run history** view. This replaces
   the old hand-maintained `run_history.csv`.
+- **Statement-tracker staging:** `‹data›/statement_tracker/_statement_tracker/` — where
+  the grid is built before upload, and the permanent home of the tracker's metadata cache
+  and digest state. Safe to delete: the next run re-pulls (a full metadata pass) and
+  re-baselines the digest to the last 7 days.
 
 A non-zero exit code from `canoe_sync.py` means at least one document failed — the log
 names each failure with its document id.
@@ -260,7 +335,7 @@ against Graph; do not scan a folder.
 canoe-docs/
 ├── install.sh                # Installer: venv + deps + launchd job
 ├── setup.py                  # Credential wizard: prompts -> secrets file, validates Graph
-├── run_sync.sh               # What the scheduler runs weekly (secrets file -> env -> canoe_sync)
+├── run_sync.sh               # What the scheduler runs weekly (canoe_sync, then statement_tracker)
 ├── run_dashboard.sh          # Launch the local admin dashboard (secrets file -> env -> dashboard)
 ├── .env.example              # Every config key, empty (reference only)
 ├── requirements.txt
@@ -270,13 +345,16 @@ canoe-docs/
     ├── dashboard.py          # Local admin dashboard (manifest / runs / reconcile / resync)
     ├── config.py             # Reads all configuration from the environment
     ├── manifest.py           # Idempotency record, keyed on the Canoe document id
+    ├── statement_tracker.py  # Which statements have not arrived: grid -> _statement_tracker/
     ├── canoe_auth.py         # Canoe API OAuth (client-credentials / password fallback)
     └── credentials_check.py  # Verify Canoe auth (fetches a token, downloads nothing)
 ```
 
-Other scripts in `py files/` (`statement_tracker.py`, `canoe_reclassify.py`,
-`canoe_route.py`, `canoe_bulk_download.py`) are separate utilities from earlier phases;
-they are not part of the scheduled Graph sync described here.
+`statement_tracker.py` is the weekly job's second step — see
+[The statement tracker](#the-statement-tracker). The remaining scripts in `py files/`
+(`canoe_reclassify.py`, `canoe_route.py`, `canoe_bulk_download.py`) are utilities from
+earlier phases and are **not** part of the scheduled sync; `run_weekly.sh` is the
+superseded pre-Graph pipeline, kept for reference and not installed by `install.sh`.
 
 ---
 

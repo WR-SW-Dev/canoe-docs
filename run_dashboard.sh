@@ -7,9 +7,9 @@
 # dashboard needs the Graph config for the Reconcile and Resync actions; the Manifest and
 # Run-history views work even without it.
 #
-# The dashboard binds to 127.0.0.1 only. To reach it from another machine, use an SSH
-# tunnel to the App Server (e.g. ssh -L 8765:127.0.0.1:8765 appserver) rather than
-# exposing it on the network -- it can trigger a full resync.
+# The dashboard defaults to 127.0.0.1; CANOE_DASHBOARD_HOST can expose it to the tailnet.
+# Read-only views require no login. Resync separately requires CANOE_RESYNC_SECRET
+# immediately before the action is submitted.
 
 BASE="${0:A:h}"
 VENV="$BASE/.venv/bin/python"
