@@ -889,15 +889,36 @@ class ArchiveLinks:
     document itself is not in the archive.
     """
 
-    def __init__(self, inventory: dict, *, web: bool):
+    def __init__(self, inventory: dict, *, web: bool, path_by_doc_id: dict | None = None):
         self._web = web
         self._files: dict[str, dict] = {}
         for f in inventory["files"]:
             self._files.setdefault(_stem(f["name"]), f)
         self._folders = {d["path"]: d for d in inventory["folders"]}
+        # Canoe doc id -> the library item it was filed as. The manifest records the exact
+        # path each document was written to, which is the only identifier that survives a
+        # re-tag: renaming a document in Canoe changes the name the tracker looks up but
+        # not the file already sitting in SharePoint.
+        self._by_id: dict[str, dict] = {}
+        if path_by_doc_id:
+            by_path = {f["path"]: f for f in inventory["files"]}
+            for doc_id, path in path_by_doc_id.items():
+                item = by_path.get(path)
+                if item is not None:
+                    self._by_id[doc_id] = item
 
     def url(self, rec: dict) -> str | None:
-        item = self._files.get((rec.get("doc_name") or "").lower())
+        # Look the document up under the name it was FILED as, not the name Canoe shows.
+        # canoe_sync sanitizes '/', ':' and friends out of a document name before writing
+        # it to SharePoint, so a fund like "P/E Investments" is stored as "P-E ..." and a
+        # raw-name lookup silently misses -- the cell then falls back to a link to the
+        # fund folder, which looks like a broken link to whoever clicks it.
+        # By document id first: it is exact, and unlike the name it does not drift when
+        # somebody re-tags the document in Canoe.
+        item = self._by_id.get(rec.get("doc_id")) if self._by_id else None
+        if item is None:
+            name = (rec.get("doc_name") or "").strip()
+            item = self._files.get(_sanitize(name).lower()) if name else None
         if item is None:
             item = self._folders.get(_sanitize(rec["investment"]))
         if item is None:
@@ -1231,10 +1252,21 @@ class GraphDest:
                    and f["name"].endswith(".xlsx")]
         if not current:
             return
+        import graph_client
         taken = {f["name"] for f in self.gc.list_folder(f"{SUBDIR}/{ARCHIVE}")}
         for f in sorted(current, key=lambda x: x["name"]):
             target = _free_name(f["name"], taken)
-            self.gc.move(f["path"], f"{SUBDIR}/{ARCHIVE}", target if target != f["name"] else None)
+            try:
+                self.gc.move(f["path"], f"{SUBDIR}/{ARCHIVE}", target if target != f["name"] else None)
+            except graph_client.GraphError as exc:
+                # 423 = somebody has the workbook open in Excel. Housekeeping must never
+                # cost us the update: leave the old grid where it is, publish the new one
+                # anyway, and let the next run sweep it up.
+                if "423" in str(exc) or "resourceLocked" in str(exc):
+                    print(f"  note        : {f['name']} is open in Excel and could not be "
+                          f"archived -- leaving it in place, publishing anyway")
+                    continue
+                raise
             taken.add(target)
             print(f"  archived    : {f['name']} -> {ARCHIVE}/{target}")
 

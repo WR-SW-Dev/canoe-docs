@@ -144,6 +144,17 @@ def tracker_dir() -> str:
     return get("CANOE_TRACKER_DIR", default=os.path.join(data_dir(), "statement_tracker"))
 
 
+def k1_tracker_dir() -> str:
+    """Local staging/working dir for the K-1 tracker in --graph mode.
+
+    Same arrangement as tracker_dir(), one directory over: outputs are built here and
+    then uploaded, and the tracker's own runtime state (metadata cache, digest state)
+    stays here rather than in the synced library. Mirrors the SharePoint layout:
+    <dir>/_k1_tracker/[backend/].
+    """
+    return get("CANOE_K1_TRACKER_DIR", default=os.path.join(data_dir(), "k1_tracker"))
+
+
 def resync_status_path() -> str:
     """Small JSON status file the dashboard writes when it launches a --full resync."""
     return get("CANOE_RESYNC_STATUS_PATH", default=os.path.join(data_dir(), "resync_status.json"))

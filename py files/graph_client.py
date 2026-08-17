@@ -42,7 +42,7 @@ DEFAULT_BACKOFF = 10
 # tracker's grids, which are generated here rather than pulled from Canoe, would
 # otherwise show up as a forever-growing list of orphans. Keep in step with
 # statement_tracker.SUBDIR (asserted there).
-NON_DOCUMENT_FOLDERS = {"_statement_tracker"}
+NON_DOCUMENT_FOLDERS = {"_statement_tracker", "_k1_tracker"}
 
 
 class GraphError(RuntimeError):

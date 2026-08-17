@@ -28,6 +28,8 @@ registration, which is scoped so it can write only to the one Canoe SharePoint s
 4. Refresh the **statement tracker** (`statement_tracker.py --graph`) and upload the
    received grid to `‹root›/_statement_tracker/`. Metadata only — it never opens a
    document body. See [The statement tracker](#the-statement-tracker).
+5. Refresh the **K-1 tracker** (`k1_tracker.py --graph`) and upload its grid to
+   `‹root›/_k1_tracker/`. Also metadata only. See [The K-1 tracker](#the-k-1-tracker).
 
 **Idempotent:** a rerun on the same day skips everything already in the manifest and
 uploads with *replace* semantics, so it never duplicates a document in the library.
@@ -40,9 +42,9 @@ Distinct documents that happen to share a name are disambiguated (`… (2).pdf`)
   backs off.
 
 The document sync itself sends **no email or Teams notification** — its output is the
-library, the log, and the exit code. The one exception is the statement tracker's
-optional digest, which is sent only when `CANOE_DIGEST_TO` and the `CANOE_SMTP_*` keys
-are set; leave them unset and nothing is emailed.
+library, the log, and the exit code. The one exception is the trackers' optional
+digests, sent only when `CANOE_DIGEST_TO` (or `CANOE_K1_DIGEST_TO` for K-1s) and the
+`CANOE_SMTP_*` keys are set; leave them unset and nothing is emailed.
 
 ---
 
@@ -226,14 +228,14 @@ The dashboard needs the Graph configuration for **Reconcile** and **Resync**; th
 the service does not depend on any user having an active GUI/console session.
 `run_sync.sh` reads the configuration from the local secrets file, exports it to the
 environment (line-by-line, never `source`/eval`), runs `canoe_sync.py`, and then
-refreshes the statement tracker.
+refreshes the statement tracker and the K-1 tracker.
 
-The tracker step runs **regardless of the sync's exit code**, and its own exit code is
-logged separately without changing the job's: it reads Canoe metadata rather than the
-library, so it still produces a correct grid when an upload failed, and a tracker
-problem must not be reported as a broken document sync. Both codes appear in
-`run_sync.log`. The step is skipped for modes that upload nothing (`--dry-run`,
-`--seed`, `--local-dest`, `--export`).
+Both tracker steps run **regardless of the sync's exit code**, and their exit codes are
+logged separately without changing the job's: they read Canoe metadata rather than the
+library, so they still produce correct grids when an upload failed, and a tracker
+problem must not be reported as a broken document sync. Neither tracker can stop the
+other from running. All three codes appear in `run_sync.log`. Both steps are skipped for
+modes that upload nothing (`--dry-run`, `--seed`, `--local-dest`, `--export`).
 
 - Disable: `sudo launchctl unload /Library/LaunchDaemons/co.wakerobin.canoe.sync.plist`
 - Run now: `sudo launchctl start co.wakerobin.canoe.sync`
@@ -290,6 +292,161 @@ cd "py files"
 into a local OneDrive-synced `Canoe` folder instead, and is kept for ad-hoc local runs;
 grid hyperlinks are relative paths in that mode and absolute SharePoint URLs in `--graph`.
 
+Both trackers resolve a hyperlink by matching Canoe's document name against the library
+listing, and that match **sanitizes the name first** — `canoe_sync` strips `/`, `:` and
+friends out of a name before filing it, so a fund like `P/E Investments` is stored as
+`P-E Investments-…`. Without sanitizing, those documents silently missed and the cell
+fell back to linking the fund *folder*, which reads as a broken link to whoever clicks
+it. A document genuinely absent from the library still falls back to the folder — most
+often one filed under `Unknown Investment` before Canoe finished classifying it, which
+the manifest then stops the sync from ever re-filing.
+
+---
+
+## The K-1 tracker
+
+`k1_tracker.py` is the tax-document sibling of the statement tracker, built to the same
+shape (same two destinations, dated workbook plus `backend/`, auto-seeded editable
+schedule, digest, `Archive/` rotation) and answering the same kind of question:
+**which K-1s have not arrived yet**. It covers `K-1` and `K-3` — K-3 is the
+foreign-activity companion and arrives on the same cycle from the same manager. Like the
+statement tracker it reads metadata only, never a document body.
+
+It runs as the third step of the weekly job and writes under `‹root›/_k1_tracker/`:
+
+| Path | What it is |
+| --- | --- |
+| `K-1 Tracker ‹date›.xlsx` | **The team grid.** One row per fund/entity, one column per tax year, in four colours: received / not in Canoe / not yet due / needs a fix. Sheet 2 is the **Chase list** — a flat worklist, most-actionable first, whose *Action* column says what to do about each row. Sheet 3 is **By entity** — expected / received / outstanding per investing entity, per tax year. |
+| `Archive/` | Previous grids, same rotation and rationale as the statement tracker. |
+| `backend/k1_schedule.xlsx` | **Editable by the team.** One row per fund: `track`, `first_tax_year`, `due_month_day`, `exclude_entities`, `contact`. Auto-seeded on the first run — review it. A second sheet, **Entity aliases**, folds two Canoe entity names into one owner (see below). |
+| `backend/` (rest) | HTML dashboard, digest, status/received CSVs. |
+
+### What is different from the statement tracker
+
+K-1s are annual by definition, so there is no cadence to infer. The question becomes
+which fund × entity × tax year combinations are *owed* a K-1, and that is derived from
+**holdings, not from K-1 history**: an entity is expected to receive a K-1 for tax year
+Y when Canoe shows it held that fund during Y — an Account Statement or Capital Call
+Notice tagged to that fund and entity, or a K-1 itself. Holding is treated as a
+contiguous span, so a gap in Canoe's coverage does not punch a hole in the expectation,
+and an exited position stops being expected after its final year. **A row exists only
+where a K-1 is owed**, so an empty cell means nothing is expected — there is no third
+reading. Deriving from holdings rather than from past K-1s is what lets the grid flag a
+fund that has *never* delivered one.
+
+The deadline is a **date, not a grace period**: `June 30` of the year following the tax
+year by default, editable per fund. That is deliberately ahead of the September 15
+extended filing deadline, to leave a window for chasing.
+
+Statuses, beyond received / late / pending / OVERDUE:
+
+| Status | Meaning |
+| --- | --- |
+| `review` | Arrived, but Canoe flags it (`Awaiting Confirmation`, `Anomaly Detected`, `Potential Discrepancy`, `Configuration Required`) — internal Canoe work. |
+| `locked` | Arrived but **password protected**. Encrypted tax PDFs are routine; this is a different action (ask the manager for the password) from a Canoe review, so it is not counted as received. |
+| `retag` | A K-1 for the fund and year is in Canoe with **no entity assigned** — a tagging job, not a missing document. |
+
+**Entity-less K-1s, and why a cell sometimes has no link.** Canoe leaves the entity blank
+when its extraction is unsure, but the manager almost always names the partner in the
+filename, so the tracker matches that back against the entities Canoe knows hold the fund
+(`&`/`and` and punctuation normalised). Exactly one match attributes the document; the
+cell shows `Tag` and links to it. Anything else leaves it unattributed — a filename like
+`2023 K1 - FVP Opportunity Fund IV LP - 66332.pdf` identifies the investor only by account
+number, so no attribution is possible.
+
+An unattributed document is offered to **no** entity row. Earlier revisions handed the
+same untagged K-1 to every entity missing that fund-year, which pointed one beneficiary
+at another beneficiary's tax return — the rows read `Tag?` and carry **no hyperlink**, and
+the document is instead listed once, per fund-year, at the bottom of the Chase list where
+nothing claims to own it. Rows with no candidate at all stay plain `OVERDUE`.
+
+> The matcher deliberately keeps *"Scott and Amanda Brooks Family Trust"* and *"Scott J
+> Brooks and Amanda T Brooks"* apart. They are different Canoe entities, and conflating
+> them is exactly how a K-1 gets mis-filed.
+
+**Mis-tag detection.** Within one fund and tax year, an entity holding **two final K-1s**
+while a sibling entity holds **none** is the signature of a mis-tag: managers send one
+K-1 per partner, so the surplus one probably belongs to the entity showing nothing. Both
+sides are flagged, the missing cell reads **`Check?`**, and its Chase list action becomes
+**"CHECK CANOE TAGGING first"** instead of "Chase the manager" — the whole point being not
+to email a manager for a document Canoe already holds under the wrong name.
+
+It is a suspicion, not a verdict: an amended K-1 also arrives as a second final, so the
+tracker asks for a check rather than reassigning anything. Drafts never count toward the
+surplus, and a fund-year with nobody missing is never flagged.
+
+**Entity aliases.** Canoe sometimes files one owner under two names — the same position
+tagged to a trust in one year and to its trustees personally in another — which splits it
+into two grid rows, one showing a K-1 nobody expected and the other showing a gap that is
+not real. The **Entity aliases** sheet in `k1_schedule.xlsx` maps `alias` →
+`canonical_entity`, and the rename is applied where rows are first built, so holdings,
+expectations, attribution and every sheet all agree. Matching ignores case; an alias
+pointing at itself is ignored.
+
+> Only for names that are genuinely the same owner. Two entities that file separate tax
+> returns must stay separate rows, or the grid will call one complete while the other's
+> K-1 is still outstanding.
+| `draft` | Only a **draft** K-1 has arrived; the final is still owed. |
+| `unverified` | Holdings say a K-1 is owed, but this fund has **never delivered one for any year**, so it may simply not issue them (a 1099 payer, an offshore feeder, a position held through a blocker). |
+
+**Drafts.** Canoe gives a draft K-1 the document type `K-1` and the status `Complete`,
+exactly like the real thing — `document_approval` reads `Pending` on all 454 documents
+and `document_tags` carry only Canoe-internal flags, so neither helps. The **only**
+signal is the manager's own filename (`2025 DRAFT K-1 - RMWC DLF, LP.pdf`), which the
+tracker matches on `draft` / `preliminary` / `estimated`. Where a draft and a final both
+cover a year, the final wins and the cell is simply `received` — and the cell's link
+points at the final even when the draft arrived first. A draft **alone** never counts as
+received: a return cannot be filed on it, so the year stays open and the Chase list says
+*"Chase the manager for the FINAL"*.
+
+> `amended` is deliberately not treated as a marker. Every occurrence in this library is
+> the phrase *"as amended"* inside a trust's legal name, so matching it would flag dozens
+> of perfectly good K-1s.
+
+`unverified` is painted the **same red as OVERDUE**. Canoe genuinely cannot tell the two
+apart — `investment_structure` reads `drawdown_fund` for 11 of the 13 funds that have
+never filed a K-1, exactly as it does for the 50 that have — so giving it a softer colour
+only hid real chases. The distinction is real but it is a *human* judgement, so it
+surfaces where a human acts on it: the Chase list's **Action** column reads either
+*"Chase the manager"* or *"Confirm this fund issues a K-1"*. Once you have confirmed a
+fund genuinely does not issue one, `track=no` retires its rows for good.
+
+Canoe-flagged `Duplicate` documents are ignored outright, so a re-send never satisfies a
+year on its own. K-1s sitting in Canoe's **`unknown` investment bucket** cannot be placed
+on the grid at all — there is no fund to file them under — so they are listed separately
+in the dashboard's *Action needed* table rather than silently dropped. Canoe already
+knows they are K-1s; assigning the investment in Canoe is all it takes to pull them onto
+the grid.
+
+Four colours, not eight, is deliberate: an earlier revision gave every status its own
+swatch and the legend read as noise. The finer statuses still drive the Chase list and
+the CSVs, where the difference changes what you do.
+
+Two further notes. Canoe returns `fund_sponsor: null` on K-1 allocations, so the
+schedule's **`contact`** column is the only way the Chase list can tell you who to
+email — worth filling in for the funds you actually chase. And the **first metadata pull
+takes several minutes** (it covers the holdings-evidence types as well as the K-1s);
+delta refreshes afterwards take seconds.
+
+```bash
+cd "py files"
+../.venv/bin/python k1_tracker.py --graph                     # what the weekly job runs
+../.venv/bin/python k1_tracker.py --graph --dry-run           # build in staging, upload nothing
+../.venv/bin/python k1_tracker.py --graph --refresh full      # re-pull all metadata
+../.venv/bin/python k1_tracker.py --graph --reuse-inventory   # fast re-publish (see below)
+../.venv/bin/python k1_tracker.py --dest /path/to/Canoe       # a LOCAL synced archive
+```
+
+**Re-publishing after a Canoe correction.** Metadata is already incremental — a delta
+pull by `last_modified` takes seconds and picks up re-tags made inside Canoe. What makes
+a run slow is walking the library (~10k files) to resolve the grid's hyperlinks, and that
+listing only changes when the sync uploads documents. `--reuse-inventory[=MINUTES]`
+(default 360) reuses the previous walk, turning a re-publish from minutes into seconds.
+
+It is **off by default and not used by the weekly job**, deliberately: that job runs
+immediately after the sync has added documents, which is precisely when a stale listing
+would mislink the newest K-1s.
+
 ---
 
 ## Logs and state
@@ -313,6 +470,9 @@ synced/OneDrive folder**, so the idempotency manifest cannot be corrupted by a s
   the grid is built before upload, and the permanent home of the tracker's metadata cache
   and digest state. Safe to delete: the next run re-pulls (a full metadata pass) and
   re-baselines the digest to the last 7 days.
+- **K-1-tracker staging:** `‹data›/k1_tracker/_k1_tracker/` (`CANOE_K1_TRACKER_DIR`) — the
+  same arrangement for the K-1 tracker, with its own independent metadata cache and digest
+  state. Equally safe to delete, at the cost of one full metadata pass.
 
 A non-zero exit code from `canoe_sync.py` means at least one document failed — the log
 names each failure with its document id.
@@ -335,7 +495,7 @@ against Graph; do not scan a folder.
 canoe-docs/
 ├── install.sh                # Installer: venv + deps + launchd job
 ├── setup.py                  # Credential wizard: prompts -> secrets file, validates Graph
-├── run_sync.sh               # What the scheduler runs weekly (canoe_sync, then statement_tracker)
+├── run_sync.sh               # What the scheduler runs weekly (canoe_sync, then both trackers)
 ├── run_dashboard.sh          # Launch the local admin dashboard (secrets file -> env -> dashboard)
 ├── .env.example              # Every config key, empty (reference only)
 ├── requirements.txt
@@ -346,6 +506,7 @@ canoe-docs/
     ├── config.py             # Reads all configuration from the environment
     ├── manifest.py           # Idempotency record, keyed on the Canoe document id
     ├── statement_tracker.py  # Which statements have not arrived: grid -> _statement_tracker/
+    ├── k1_tracker.py         # Which K-1s have not arrived: grid -> _k1_tracker/
     ├── canoe_auth.py         # Canoe API OAuth (client-credentials / password fallback)
     └── credentials_check.py  # Verify Canoe auth (fetches a token, downloads nothing)
 ```

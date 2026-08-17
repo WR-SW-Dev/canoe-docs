@@ -38,14 +38,14 @@ echo "===== sync run: $(date) =====" >> "$LOG"
 code=$?
 echo "sync exit code: $code" >> "$LOG"
 
-# Refresh the statement tracker (Canoe metadata only -- no document bodies) and upload
-# the grid to <SP_ROOT_FOLDER>/_statement_tracker/ in the same library. Runs after the
-# document sync so the grid's links resolve against what was just uploaded.
+# Refresh the two trackers (Canoe metadata only -- no document bodies) and upload their
+# grids to <SP_ROOT_FOLDER>/_statement_tracker/ and /_k1_tracker/ in the same library.
+# Both run after the document sync so their links resolve against what was just uploaded.
 #
 # Deliberately not gated on the sync's exit code and deliberately not folded into this
-# script's: the tracker reads Canoe metadata, so it still produces a correct grid when
-# an upload failed, and a tracker failure must not mark the document sync as broken.
-# Both exit codes are logged separately.
+# script's: a tracker reads Canoe metadata, so it still produces a correct grid when an
+# upload failed, and a tracker failure must not mark the document sync as broken. Each
+# exit code is logged separately, and neither tracker can stop the other from running.
 #
 # Skipped for modes that upload nothing to SharePoint -- publishing a grid from a
 # --dry-run would contradict the flag, and the others write somewhere else entirely.
@@ -58,10 +58,19 @@ done
 
 if (( skip_tracker )); then
   echo "--- statement tracker: skipped (no-upload mode: $*) ---" >> "$LOG"
+  echo "--- k-1 tracker: skipped (no-upload mode: $*) ---" >> "$LOG"
 else
   echo "--- statement tracker: $(date) ---" >> "$LOG"
   "$VENV" statement_tracker.py --graph >> "$LOG" 2>&1
   echo "tracker exit code: $?" >> "$LOG"
+
+  # K-1s arrive seasonally rather than weekly, so most runs are a no-op refresh; it
+  # rides the weekly cadence anyway so the grid is never more than a week stale during
+  # filing season. Its own metadata cache and staging dir (CANOE_K1_TRACKER_DIR) keep
+  # it independent of the statement tracker's.
+  echo "--- k-1 tracker: $(date) ---" >> "$LOG"
+  "$VENV" k1_tracker.py --graph >> "$LOG" 2>&1
+  echo "k-1 tracker exit code: $?" >> "$LOG"
 fi
 
 exit $code
