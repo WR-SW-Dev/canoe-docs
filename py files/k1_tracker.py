@@ -109,9 +109,10 @@ from manifest import Manifest
 from statement_tracker import (ArchiveLinks, _cell_str, _digest, _free_name,
                                local_inventory, parse_date)
 
-# Documents this tracker is ABOUT. K-3 rides along: it is the foreign-activity
-# companion to the K-1 and arrives on the same cycle from the same manager.
-K1_TYPE_NAMES = ["K-1", "K-3"]
+# Documents this tracker is ABOUT. Canoe also uses "Federal K1" for some federal
+# schedules; it is the same tax-document obligation as K-1 for tracker purposes.
+# K-3 rides along as the foreign-activity companion and arrives on the same cycle.
+K1_TYPE_NAMES = ["K-1", "Federal K1", "K-3"]
 
 # Documents that PROVE an entity held a fund in a given year. Both carry an entity
 # and a data date; fund-level documents (quarterly reports, financials) are useless
@@ -545,7 +546,15 @@ def seed_schedule(k1_rows: list[dict], hold_rows: list[dict], spans: dict,
             "fund_sponsor": sponsor,
             "contact": "",
             "track": "yes" if ent_spans else "no",
-            "first_tax_year": str(max(first, DEFAULT_FIRST_TAX_YEAR)) if first else "",
+            # Deliberately blank, not the span's first year. reconcile() already floors
+            # every fund at its live holdings span, so a seeded value only duplicates
+            # that -- and then goes stale: the span moves EARLIER when an untagged K-1
+            # is finally tagged (a K-1 is itself holdings evidence), and a frozen floor
+            # above that year silently drops the cell, reporting an arrived K-1 as
+            # nothing at all. Blank leaves first_tax_year meaning what it says on the
+            # "How to use" sheet: a human override, set by a person who wants earlier
+            # years trimmed.
+            "first_tax_year": "",
             "due_month_day": "",
             "exclude_entities": "",
             "notes": notes,
@@ -657,8 +666,9 @@ def sync_new_funds(sched: list[dict], k1_rows: list[dict], hold_rows: list[dict]
 # Reconciliation
 # --------------------------------------------------------------------------- #
 
-# A real K-1 beats its foreign-activity companion when both cover a year.
-TYPE_PRIORITY = {"k-1": 0, "k-3": 1}
+# A federal K-1 beats its foreign-activity companion when both cover a year. Canoe's
+# "K-1" and "Federal K1" labels are equivalent, so either may represent the cell.
+TYPE_PRIORITY = {"k-1": 0, "federal k1": 0, "k-3": 1}
 
 
 def _doc_rank(m: dict) -> tuple:
@@ -738,6 +748,12 @@ def reconcile(sched: list[dict], k1_rows: list[dict], spans: dict,
             by_cell.setdefault((r["investment"], r["entity"], r["tax_year"]), []).append(r)
 
     out = []
+    # Funds whose first_tax_year sits above a year that already has a K-1. Reported
+    # rather than corrected: a person may have set that floor on purpose. But the cell
+    # it hides vanishes from the grid completely -- not overdue, not received, absent --
+    # so an arrived K-1 can go missing without a word. Saying it out loud is what keeps
+    # "no row" from being mistaken for "nothing owed".
+    suppressed: list[tuple] = []
     for s in sched:
         if (s.get("track") or "").strip().lower() not in ("yes", "y", "true", "1"):
             continue
@@ -751,6 +767,15 @@ def reconcile(sched: list[dict], k1_rows: list[dict], spans: dict,
         due_md = (s.get("due_month_day") or "").strip() or DEFAULT_DUE_MD
         excluded = {e.strip().lower() for e in (s.get("exclude_entities") or "").split(";")
                     if e.strip()}
+        # Only floors raised ABOVE the tracker's own starting line are interesting.
+        # DEFAULT_FIRST_TAX_YEAR hides pre-2022 K-1s on a third of the library by
+        # design, and reporting that every run would bury the one fund that matters.
+        hidden = sorted({r["tax_year"] for r in k1_rows
+                         if r["investment"] == inv and r["tax_year"]
+                         and r["tax_year"] < floor and r["tax_year"] <= max_year}
+                        ) if floor > DEFAULT_FIRST_TAX_YEAR else []
+        if hidden:
+            suppressed.append((inv, floor, hidden))
 
         for (i, entity), (first, last) in sorted(spans.items(), key=lambda kv: kv[0][1].lower()):
             if i != inv or entity.lower() in excluded:
@@ -822,6 +847,12 @@ def reconcile(sched: list[dict], k1_rows: list[dict], spans: dict,
                     "mistag_check": False,
                     "mistag_hint": "",
                 })
+
+    for inv, floor, years in suppressed:
+        print(f"  floor hides  : {inv} has K-1s for "
+              f"{', '.join(str(y) for y in years)} but first_tax_year={floor} keeps "
+              f"{'that year' if len(years) == 1 else 'those years'} off the grid "
+              f"-- clear first_tax_year in the schedule if that is not intended")
 
     # A single untagged K-1 cannot belong to two entities at once. The retag rule above
     # offers the same document to every entity row missing that fund-year, which is a

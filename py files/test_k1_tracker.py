@@ -12,6 +12,8 @@ credentials or network. The Graph destination runs against the same in-memory fa
 library that test_statement_tracker.py uses.
 """
 
+import contextlib
+import io
 import os
 import shutil
 import sys
@@ -204,6 +206,12 @@ class StatusTests(unittest.TestCase):
         # The K-1 is in Canoe but nobody assigned the entity: a tagging job, not a
         # missing document, so it must not read as OVERDUE.
         self.assertEqual(self._st(doc("u", "K-1", "Acme IV", "", "2025-12-31")), "retag")
+
+    def test_federal_k1_satisfies_the_same_obligation(self):
+        self.assertEqual(
+            self._st(doc("federal", "Federal K1", "Acme IV", "Trust A", "2025-12-31")),
+            "received",
+        )
 
     def test_k3_satisfies_a_year_but_a_k1_is_preferred_for_the_link(self):
         recs = reconcile(self.base + [doc("k3", "K-3", "Acme IV", "Trust A", "2025-12-31"),
@@ -691,13 +699,64 @@ class ScheduleTests(unittest.TestCase):
         recs = k.reconcile([sched_row("Acme IV", first_tax_year="2024")], k1_rows, spans, TODAY)
         self.assertEqual(min(r["tax_year"] for r in recs), 2024)
 
-    def test_seeded_first_tax_year_never_predates_canoes_coverage(self):
+    def test_a_floor_that_hides_an_arrived_k1_is_reported(self):
+        # The floor still wins -- a person may have set it deliberately -- but the cell
+        # it removes is invisible on the grid, so the run has to say which K-1 it is
+        # sitting on. Silence here is what let a tagged K-1 go missing unnoticed.
+        docs = [doc("stmt", "Account Statement", "Acme IV", "Trust A", "2025-06-30"),
+                doc("k1", "K-1", "Acme IV", "Trust A", "2023-12-31")]
+        k1_rows, hold_rows, _ = k._split(docs)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            recs = k.reconcile([sched_row("Acme IV", first_tax_year="2025")], k1_rows,
+                               k.holding_spans(k1_rows, hold_rows), TODAY)
+        self.assertIsNone(status_of(recs, "Acme IV", "Trust A", 2023))
+        self.assertIn("floor hides", buf.getvalue())
+        self.assertIn("2023", buf.getvalue())
+
+    def test_the_default_floor_is_not_reported_as_hiding_anything(self):
+        # Pre-2022 K-1s are off the grid on much of the library by design. Reporting
+        # that every run would bury the funds whose floor was raised by mistake.
+        docs = [doc("stmt", "Account Statement", "Acme IV", "Trust A", "2025-06-30"),
+                doc("k1", "K-1", "Acme IV", "Trust A", "2021-12-31")]
+        k1_rows, hold_rows, _ = k._split(docs)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            k.reconcile([sched_row("Acme IV", first_tax_year=str(k.DEFAULT_FIRST_TAX_YEAR))],
+                        k1_rows, k.holding_spans(k1_rows, hold_rows), TODAY)
+        self.assertNotIn("floor hides", buf.getvalue())
+
+    def test_a_seeded_floor_does_not_hide_a_k1_tagged_after_the_fund_was_seeded(self):
+        # The sequence that lost a real K-1: a new fund is first seen when Canoe holds
+        # only next-year statements for it, so it is seeded then; later somebody tags
+        # that fund's earlier K-1, which makes it holdings evidence for an EARLIER year.
+        # A floor frozen at seed time sat above that year and dropped the cell from the
+        # grid entirely -- the arrived K-1 was reported as nothing at all, not even late.
+        untagged = doc("k1", "K-1", "Mavik VS2", "--", "2025-12-31")
+        stmt = doc("stmt", "Account Statement", "Mavik VS2", "CRUT", "2026-03-31")
+
+        k1_rows, hold_rows, _ = k._split([untagged, stmt])
+        seeded = k.seed_schedule(k1_rows, hold_rows,
+                                 k.holding_spans(k1_rows, hold_rows), self.path)
+
+        # Now the K-1 carries its entity, so the span reaches back to 2025.
+        tagged = doc("k1", "K-1", "Mavik VS2", "CRUT", "2025-12-31")
+        k1_rows, hold_rows, _ = k._split([tagged, stmt])
+        recs = k.reconcile(seeded, k1_rows, k.holding_spans(k1_rows, hold_rows), TODAY)
+        self.assertEqual(status_of(recs, "Mavik VS2", "CRUT", 2025), "received")
+
+    def test_a_seeded_fund_never_generates_rows_before_the_default_first_tax_year(self):
+        # Coverage reaching back to 2018 must not put 2018 rows on the grid. The seed
+        # leaves first_tax_year blank on purpose, so this floor has to come from
+        # reconcile() reading DEFAULT_FIRST_TAX_YEAR -- assert the grid, not the cell.
         docs = [doc("s", "Account Statement", "Old Fund", "Trust A", "2018-06-30"),
                 doc("s2", "Account Statement", "Old Fund", "Trust A", "2025-06-30")]
         k1_rows, hold_rows, _ = k._split(docs)
         seeded = k.seed_schedule(k1_rows, hold_rows,
                                  k.holding_spans(k1_rows, hold_rows), self.path)
-        self.assertEqual(seeded[0]["first_tax_year"], str(k.DEFAULT_FIRST_TAX_YEAR))
+        self.assertEqual(seeded[0]["first_tax_year"], "")
+        recs = k.reconcile(seeded, k1_rows, k.holding_spans(k1_rows, hold_rows), TODAY)
+        self.assertEqual(min(r["tax_year"] for r in recs), k.DEFAULT_FIRST_TAX_YEAR)
 
     def test_exclude_entities_drops_only_that_entity(self):
         _, k1_rows, spans = self._seed()
